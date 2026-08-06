@@ -2,7 +2,6 @@ package uniswapv2
 
 import (
 	"math/big"
-
 	tokentax "github.com/KyberNetwork/kyberswap-dex-lib/pkg/liquidity-source/uniswap/v2/token-tax"
 )
 
@@ -31,6 +30,17 @@ type Extra struct {
 	TaxInfo *tokentax.TaxInfo `json:"taxInfo,omitempty"`
 }
 
+// currentTaxCheckVersion is bumped whenever the tax-detection mechanism changes in a way that
+// invalidates old TaxInfo.Checked caches (e.g. broader base-token/factory coverage), forcing one
+// recheck. See newTokenTaxTracker and TaxInfo.TaxCheckVersion.
+const currentTaxCheckVersion = 1
+
+type StaticExtra struct {
+	Router   string `json:"r,omitempty"`
+	Selector uint32 `json:"s,omitempty"`
+	Gas      int64  `json:"g,omitempty"`
+}
+
 type PoolMeta struct {
 	Extra
 	PoolMetaGeneric
@@ -38,5 +48,6 @@ type PoolMeta struct {
 
 type PoolMetaGeneric struct {
 	ApprovalAddress string `json:"approvalAddress,omitempty"`
+	RouterSelector  uint32 `json:"sel,omitempty"`
 	NoFOT           bool   `json:"noFOT,omitempty"`
 }
