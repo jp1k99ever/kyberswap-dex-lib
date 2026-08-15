@@ -10,6 +10,10 @@ type StaticExtra struct {
 	Swapper    string `json:"swapper"` // CollateralRebalancerSwapper — swap call + approval target
 	CollVault  string `json:"cv"`
 	ALM        string `json:"alm"` // the swapper's ALM adapter (reserves/valuation reads)
+	// The CvammALM the adapter wraps — the everlong-cvamm pool this vault's collateral
+	// actually trades on. Resolved from the adapter bytecode at listing; couples the two
+	// sims as meta/base so a CVAMM fill in the same route re-prices this vault.
+	UnderlyingCvamm string `json:"ucv,omitempty"`
 	// 18 - collVault.assetDecimals() (constant per deployment).
 	CvDecimalsOffset uint8 `json:"cdo"`
 	// PositionManager / BorrowerOperations of the CDP the position lives in, and the

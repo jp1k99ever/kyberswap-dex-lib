@@ -194,12 +194,14 @@ func (p *PoolSimulator) UpdateBalance(params pool.UpdateBalanceParams) {
 		p.reserveStable = new(uint256.Int).Sub(p.reserveStable, si.GrossOut)
 	}
 	p.Info.Reserves = []*big.Int{p.reserveStable.ToBig(), p.reserveVolatile.ToBig()}
-	// The FFAD fee hook (V2 impl, 2026-08-13) recomputes the directional fees when a fill
-	// crosses the reservation price, so a fill can flip which direction carries the worse
-	// haircut — observed live at a ~92 bps spread. A follow-up quote on this updated state
-	// (split route or repeat pool visit) therefore prices BOTH directions at the worse of
-	// the two sampled fees: under-quoting is the safe side (the executed fill only beats
-	// the quote), while keeping the sampled pair could over-quote by the full spread.
+	// The FFAD fee hook (V2 impl, 2026-08-13) recomputes the directional fees on live
+	// state — a fill flips which direction carries the worse haircut when it crosses the
+	// reservation (observed live at a ~92 bps spread) and grows the displacement surcharge
+	// and hot floor. The fee is PRE-TRADE sampled on-chain, so per-block reads price
+	// isolated fills exactly (replay-verified); for a follow-up quote on this updated
+	// state (split route / repeat visit) both directions take the worse of the two
+	// sampled fees. That covers the dominant effect (the flip); the residual same-block
+	// floor growth is absorbed by the route's slippage bound like any cross-fill drift.
 	if p.Extra.FeeStableInWad != nil && p.Extra.FeeVolatileInWad != nil {
 		worse := p.Extra.FeeStableInWad
 		if p.Extra.FeeVolatileInWad.Gt(worse) {

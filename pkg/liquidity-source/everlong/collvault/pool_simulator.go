@@ -2,6 +2,7 @@ package everlongcollvault
 
 import (
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -29,9 +30,100 @@ type PoolSimulator struct {
 	pool.Pool
 	StaticExtra StaticExtra
 	Extra       Extra
+
+	// Meta/base coupling with the everlong-cvamm pool the vault's ALM adapter wraps:
+	// a CVAMM fill in the same route moves the ALM reserves this vault's quote prices
+	// from. baseStable0/baseVolatile0 are the base reserves at THIS snapshot's block —
+	// the fold applies only the movement since then, so tracker refreshes never double
+	// count. nil basePool = uncoupled (quotes from the snapshot alone, as before).
+	basePool      pool.IPoolSimulator
+	baseStable0   *big.Int
+	baseVolatile0 *big.Int
 }
 
-var _ = pool.RegisterFactory0(DexType, NewPoolSimulator)
+var _ = pool.RegisterFactoryMeta(DexType, NewPoolSimulatorWithBases)
+
+// NewPoolSimulatorWithBases wires the underlying everlong-cvamm sim (resolved at listing
+// into StaticExtra.UnderlyingCvamm) as this pool's base. Missing from the map = uncoupled.
+func NewPoolSimulatorWithBases(p entity.Pool, basePoolMap map[string]pool.IPoolSimulator) (*PoolSimulator, error) {
+	sim, err := NewPoolSimulator(p)
+	if err != nil || sim.StaticExtra.UnderlyingCvamm == "" {
+		return sim, err
+	}
+	base, ok := basePoolMap[strings.ToLower(sim.StaticExtra.UnderlyingCvamm)]
+	if !ok {
+		base, ok = basePoolMap[sim.StaticExtra.UnderlyingCvamm]
+	}
+	if ok {
+		sim.wireBase(base)
+	}
+	return sim, nil
+}
+
+// wireBase adopts the base sim and pins the delta baseline at its CURRENT (snapshot)
+// reserves. everlong-cvamm reserves are [stable, volatile] by construction.
+func (s *PoolSimulator) wireBase(base pool.IPoolSimulator) {
+	res := base.GetReserves()
+	if len(res) != 2 || res[0] == nil || res[1] == nil {
+		return
+	}
+	s.basePool = base
+	s.baseStable0 = new(big.Int).Set(res[0])
+	s.baseVolatile0 = new(big.Int).Set(res[1])
+}
+
+func (s *PoolSimulator) GetBasePools() []pool.IPoolSimulator {
+	if s.basePool == nil {
+		return nil
+	}
+	return []pool.IPoolSimulator{s.basePool}
+}
+
+// SetBasePool swaps the base POINTER only (the router re-wires clones mid-route); the
+// baseline stays at snapshot time so deltas accumulated within the route keep applying.
+// First wiring (constructed without a map) also pins the baseline.
+func (s *PoolSimulator) SetBasePool(base pool.IPoolSimulator) {
+	if base == nil || !strings.EqualFold(base.GetAddress(), s.StaticExtra.UnderlyingCvamm) {
+		return
+	}
+	if s.basePool == nil {
+		s.wireBase(base)
+		return
+	}
+	s.basePool = base
+}
+
+// baseDeltas is the base pool's reserve movement since this snapshot's baseline.
+func (s *PoolSimulator) baseDeltas() (dStable, dVolatile *big.Int, moved bool) {
+	if s.basePool == nil || s.baseStable0 == nil {
+		return nil, nil, false
+	}
+	res := s.basePool.GetReserves()
+	if len(res) != 2 || res[0] == nil || res[1] == nil {
+		return nil, nil, false
+	}
+	dStable = new(big.Int).Sub(res[0], s.baseStable0)
+	dVolatile = new(big.Int).Sub(res[1], s.baseVolatile0)
+	return dStable, dVolatile, dStable.Sign() != 0 || dVolatile.Sign() != 0
+}
+
+// foldBaseDeltas shifts the ALM legs of e by the base movement. The reference-marked
+// reserves are the same physical totals under a different marking price (see
+// UpdateBalance), so the deltas apply to both exactly.
+func foldBaseDeltas(e *Extra, dStable, dVolatile *big.Int) {
+	if e.AlmStableReserve != nil {
+		e.AlmStableReserve = new(big.Int).Add(e.AlmStableReserve, dStable)
+	}
+	if e.AlmVolatileReserve != nil {
+		e.AlmVolatileReserve = new(big.Int).Add(e.AlmVolatileReserve, dVolatile)
+	}
+	if e.RefStableReserve != nil {
+		e.RefStableReserve = new(big.Int).Add(e.RefStableReserve, dStable)
+	}
+	if e.RefAssetReserve != nil {
+		e.RefAssetReserve = new(big.Int).Add(e.RefAssetReserve, dVolatile)
+	}
+}
 
 func NewPoolSimulator(p entity.Pool) (*PoolSimulator, error) {
 	var extra Extra
@@ -101,6 +193,15 @@ func (s *PoolSimulator) CalcAmountOut(params pool.CalcAmountOutParams) (*pool.Ca
 	}
 	if s.Extra.Collateral == nil {
 		return nil, ErrNotPriceable
+	}
+
+	// Coupled quote: when the base CVAMM moved within this route, price a folded COPY
+	// (CalcAmountOut stays pure; the copy's nil basePool makes the recursion a no-op).
+	if dS, dV, moved := s.baseDeltas(); moved {
+		folded := *s
+		folded.basePool = nil
+		foldBaseDeltas(&folded.Extra, dS, dV)
+		return folded.CalcAmountOut(params)
 	}
 
 	cp := &s.StaticExtra.CurveParams
@@ -252,6 +353,13 @@ func (s *PoolSimulator) UpdateBalance(params pool.UpdateBalanceParams) {
 	si, ok := params.SwapInfo.(SwapInfo)
 	if !ok {
 		return
+	}
+	// Absorb any base CVAMM movement into the snapshot first (the fill being replayed
+	// was quoted on the folded state), then advance the baseline so it isn't recounted.
+	if dS, dV, moved := s.baseDeltas(); moved {
+		foldBaseDeltas(&s.Extra, dS, dV)
+		s.baseStable0 = new(big.Int).Add(s.baseStable0, dS)
+		s.baseVolatile0 = new(big.Int).Add(s.baseVolatile0, dV)
 	}
 	e := &s.Extra
 	e.Collateral = si.NewCollateral
