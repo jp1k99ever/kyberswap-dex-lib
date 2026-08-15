@@ -11,6 +11,8 @@ const (
 	DexType = "everlong-collvault"
 
 	rebalancerMethodCollVault         = "collVault"
+	rebalancerMethodPhysicalCrFloor   = "PHYSICAL_CR_FLOOR_WAD"
+	rebalancerMethodLeverageCurve     = "leverageCurve"
 	rebalancerMethodSettlementSwapper = "settlementSwapper"
 	rebalancerMethodExchangeState     = "exchangeState"
 	swapperMethodAlm                  = "alm"

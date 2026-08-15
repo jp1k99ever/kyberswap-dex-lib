@@ -204,7 +204,7 @@ func (s *PoolSimulator) CalcAmountOut(params pool.CalcAmountOutParams) (*pool.Ca
 		return folded.CalcAmountOut(params)
 	}
 
-	cp := &s.StaticExtra.CurveParams
+	cp := s.curveParams()
 	state := &s.Extra
 	if cp.stateRegion(state.Collateral, state.Debt, state.PriceWad) == regionOut {
 		// degenerate/unmarked states — refuse to quote rather than risk a wrong price.
@@ -221,7 +221,7 @@ func (s *PoolSimulator) CalcAmountOut(params pool.CalcAmountOutParams) (*pool.Ca
 
 func (s *PoolSimulator) calcLeverage(params pool.CalcAmountOutParams,
 	amountIn *big.Int) (*pool.CalcAmountOutResult, error) {
-	cp := &s.StaticExtra.CurveParams
+	cp := s.curveParams()
 	state := &s.Extra
 
 	// Debt origination is halted while the CDP charges borrow interest: the rebalancer
@@ -285,7 +285,7 @@ func (s *PoolSimulator) calcLeverage(params pool.CalcAmountOutParams,
 
 func (s *PoolSimulator) calcDeleverage(params pool.CalcAmountOutParams,
 	amountIn *big.Int) (*pool.CalcAmountOutResult, error) {
-	cp := &s.StaticExtra.CurveParams
+	cp := s.curveParams()
 	state := &s.Extra
 
 	maxGross := cp.maxDeleverageIn(state)
@@ -349,6 +349,16 @@ func (s *PoolSimulator) deleverageAlmShares(collVaultShares *big.Int) *big.Int {
 }
 
 // UpdateBalance replays the exact fill from SwapInfo — never recomputes swap results.
+// curveParams prefers the per-refresh on-chain curve (PHYSICAL_CR_FLOOR_WAD() live
+// today, leverageCurve() once the settable-curve upgrade ships) over the frozen
+// constants — the review's required fix for curve mutability.
+func (s *PoolSimulator) curveParams() *CurveParams {
+	if s.Extra.LiveCurve != nil {
+		return s.Extra.LiveCurve
+	}
+	return &s.StaticExtra.CurveParams
+}
+
 func (s *PoolSimulator) UpdateBalance(params pool.UpdateBalanceParams) {
 	si, ok := params.SwapInfo.(SwapInfo)
 	if !ok {

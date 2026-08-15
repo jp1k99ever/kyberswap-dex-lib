@@ -51,6 +51,12 @@ func TestBasePoolCoupling(t *testing.T) {
 	cvammTracked, err := everlongcvamm.NewPoolTracker(cvammCfg, client).GetNewPoolState(ctx, cvammPools[0], pool.GetNewPoolStateParams{})
 	require.NoError(t, err)
 
+	// live-curve overlay: the CR floor answers on the deployed impl and must land in Extra
+	var trackedExtra Extra
+	require.NoError(t, json.Unmarshal([]byte(tracked.Extra), &trackedExtra))
+	require.NotNil(t, trackedExtra.LiveCurve, "PHYSICAL_CR_FLOOR_WAD() read must produce the live overlay")
+	require.Equal(t, "1820000000000000000", trackedExtra.LiveCurve.PhysicalCrFloorWad.String())
+
 	base, err := everlongcvamm.NewPoolSimulator(cvammTracked)
 	require.NoError(t, err)
 

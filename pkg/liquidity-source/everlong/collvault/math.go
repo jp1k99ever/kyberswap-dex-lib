@@ -55,6 +55,11 @@ type CurveParams struct {
 
 // VaultState is the per-refresh rebalancer + vault snapshot (all read from chain).
 type VaultState struct {
+	// Per-refresh on-chain curve: PHYSICAL_CR_FLOOR_WAD() (live on the deployed impl) and
+	// leverageCurve() (the announced settable-curve upgrade; tolerated while absent),
+	// overlaid on the frozen constants. nil = quote from StaticExtra.CurveParams alone.
+	LiveCurve *CurveParams `json:"liveCurve,omitempty"`
+
 	// exchangeState(): position collateral (CollVault shares), debt (stable wei),
 	// reservation price R (WAD) and the posted spread (PPM).
 	Collateral *big.Int `json:"c"`

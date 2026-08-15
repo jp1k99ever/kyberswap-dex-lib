@@ -60,6 +60,26 @@ type rpcState struct {
 	lastIndexUpd  *big.Int
 	position      positionsRaw
 	pending       pendingRewardsRaw
+	crFloorWad    *big.Int
+	levCurve      levCurveRaw
+}
+
+// levCurveRaw decodes leverageCurve()'s 13-word C1 tuple (hZero stays a library
+// constant on-chain; q0 is implicitly zero).
+type levCurveRaw struct {
+	HJoin *big.Int
+	HWall *big.Int
+	Width *big.Int
+	DJoin *big.Int
+	DWall *big.Int
+	P0    *big.Int
+	P1    *big.Int
+	P2    *big.Int
+	P3    *big.Int
+	Q1    *big.Int
+	Q2    *big.Int
+	Q3    *big.Int
+	Q4    *big.Int
 }
 
 func newRPCState() *rpcState {
@@ -77,7 +97,8 @@ func newRPCState() *rpcState {
 // spot strays from the reference oracle, and the rebalancer consults it only inside
 // increaseLeverage, so its failure gates leverage (zero ref words) while deleverage
 // stays live — exactly the on-chain behavior.
-func addRPCCalls(rawAdd func(*ethrpc.Call, []any), se *StaticExtra, rd *rpcState) (refReservesIdx int) {
+func addRPCCalls(rawAdd func(*ethrpc.Call, []any), se *StaticExtra, rd *rpcState) (tolerated map[int]bool) {
+	tolerated = map[int]bool{}
 	numCalls := 0
 	add := func(c *ethrpc.Call, o []any) {
 		rawAdd(c, o)
@@ -113,12 +134,28 @@ func addRPCCalls(rawAdd func(*ethrpc.Call, []any), se *StaticExtra, rd *rpcState
 		Target: se.CollVault,
 		Method: cvMethodGetWithdrawFee,
 	}, []any{&rd.withdrawFeeBp})
-	refReservesIdx = numCalls
+	tolerated[numCalls] = true
 	add(&ethrpc.Call{
 		ABI:    almABI,
 		Target: se.ALM,
 		Method: almMethodGetReservesAtReference,
 	}, []any{&rd.refReserves})
+	// Live curve reads (review ask: refresh leverageCurve() into mutable Extra with a
+	// frozen fallback). PHYSICAL_CR_FLOOR_WAD answers on the deployed impl today;
+	// leverageCurve() ships with the announced settable-curve upgrade — both tolerated so
+	// neither an old nor a future impl can kill the snapshot.
+	tolerated[numCalls] = true
+	add(&ethrpc.Call{
+		ABI:    rebalancerABI,
+		Target: se.Rebalancer,
+		Method: rebalancerMethodPhysicalCrFloor,
+	}, []any{&rd.crFloorWad})
+	tolerated[numCalls] = true
+	add(&ethrpc.Call{
+		ABI:    rebalancerABI,
+		Target: se.Rebalancer,
+		Method: rebalancerMethodLeverageCurve,
+	}, []any{&rd.levCurve})
 	// The endogenous per-ALM-share mark the reservation value derives from; needed to
 	// recompute the post-fill reservation value in the fill-acceptance predicate.
 	add(&ethrpc.Call{
@@ -181,7 +218,7 @@ func addRPCCalls(rawAdd func(*ethrpc.Call, []any), se *StaticExtra, rd *rpcState
 			}, []any{&rd.pending})
 		}
 	}
-	return refReservesIdx
+	return tolerated
 }
 
 // LazyNewPoolState plans the refresh without executing it, so pool-service can batch
@@ -217,7 +254,7 @@ func (t *PoolTracker) getNewPoolState(ctx context.Context, p entity.Pool,
 	if overrides != nil {
 		req.SetOverrides(overrides)
 	}
-	refReservesIdx := addRPCCalls(func(c *ethrpc.Call, o []any) { req.AddCall(c, o) }, &staticExtra, rd)
+	tolerated := addRPCCalls(func(c *ethrpc.Call, o []any) { req.AddCall(c, o) }, &staticExtra, rd)
 
 	// TryAggregate because getReservesAtReference may revert on its own (reference oracle
 	// stale / spot outside the oracle neighborhood) while the venue keeps filling
@@ -227,7 +264,7 @@ func (t *PoolTracker) getNewPoolState(ctx context.Context, p entity.Pool,
 		return p, err
 	}
 	for i, ok := range resp.Result {
-		if !ok && i != refReservesIdx {
+		if !ok && !tolerated[i] {
 			return p, ErrInvalidSnapshotWord
 		}
 	}
@@ -263,7 +300,32 @@ func buildPoolState(p entity.Pool, staticExtra *StaticExtra, rd *rpcState,
 		}
 	}
 
+	// Live curve overlay (frozen fallback): the CR floor answers on the deployed impl;
+	// the full leverageCurve() tuple starts contributing when the settable-curve upgrade
+	// ships. A failed/absent read simply leaves the corresponding frozen values.
+	var liveCurve *CurveParams
+	if rd.crFloorWad != nil && rd.crFloorWad.Sign() > 0 {
+		lc := staticExtra.CurveParams
+		lc.PhysicalCrFloorWad = rd.crFloorWad
+		liveCurve = &lc
+	}
+	if rd.levCurve.HJoin != nil && rd.levCurve.HJoin.Sign() > 0 &&
+		rd.levCurve.HWall != nil && rd.levCurve.HWall.Sign() > 0 {
+		if liveCurve == nil {
+			lc := staticExtra.CurveParams
+			liveCurve = &lc
+		}
+		liveCurve.HJoin = rd.levCurve.HJoin
+		liveCurve.HWall = rd.levCurve.HWall
+		liveCurve.Width = rd.levCurve.Width
+		liveCurve.DJoin = rd.levCurve.DJoin
+		liveCurve.DWall = rd.levCurve.DWall
+		liveCurve.BezierPhi = [4]*big.Int{rd.levCurve.P0, rd.levCurve.P1, rd.levCurve.P2, rd.levCurve.P3}
+		liveCurve.BezierIntegral = [5]*big.Int{new(big.Int), rd.levCurve.Q1, rd.levCurve.Q2, rd.levCurve.Q3, rd.levCurve.Q4}
+	}
+
 	extraBytes, err := json.Marshal(Extra{
+		LiveCurve:  liveCurve,
 		Collateral: rd.exchangeState.Collateral, Debt: rd.exchangeState.Debt,
 		PriceWad: rd.exchangeState.PriceWad, SpreadPpm: rd.exchangeState.SpreadPpm,
 		AlmStableReserve:   rd.totalAmounts.StableReserve,
