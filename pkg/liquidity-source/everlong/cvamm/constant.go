@@ -20,14 +20,17 @@ const (
 )
 
 // Default gas per direction, MEASURED on real settled fills against the deployed
-// Berachain venue and rounded up for headroom: volatile-in 163,422-163,989 and
-// stable-in 209,769-297,333 across small and near-capacity fills. The two legs differ
+// Berachain venue and rounded up for headroom. V1 impl: volatile-in 163,422-163,989,
+// stable-in 209,769-297,333 across small and near-capacity fills. The V2 impl
+// (FFAD fee hook, 2026-08-13) adds the hook's fee recompute to every fill —
+// re-measured live post-upgrade: volatile-in 179,216-181,525, stable-in
+// 218,592-218,920 on session-sized fills (the stable-in bisection still scales with
+// size, so its V1 near-capacity ceiling keeps the 310k headroom). The two legs differ
 // structurally — volatile-in is closed form (one curve solve) while stable-in runs a
-// seeded bisection under DELEGATECALL, which is also why only stable-in varies with
-// size. Overridable per deployment via Config/StaticExtra.
+// seeded bisection under DELEGATECALL. Overridable per deployment via Config/StaticExtra.
 const (
 	defaultGasStableIn   int64 = 310000
-	defaultGasVolatileIn int64 = 170000
+	defaultGasVolatileIn int64 = 200000
 )
 
 var (

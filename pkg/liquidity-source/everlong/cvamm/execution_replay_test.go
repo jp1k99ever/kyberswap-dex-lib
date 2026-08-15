@@ -45,6 +45,22 @@ func TestReplayLiveSwaps(t *testing.T) {
 		"0x696ec5799e421ec0b7634983bc89bf9644472441ad26d632939f9463ea6cac7f",
 		"0xe7eff1c560d0e7adf066bc56a31ffd0a2305947335787162591796f9aecf10ba",
 		"0xd519962018cefb0da45e9b7e34d7f420f55b58c6085af882e15b24d4a77faca5",
+		// post-FFAD-upgrade sessions (V2 impl on the same proxy: dynamic directional fees
+		// via the fee hook, keeper repeg): first V2 fill, then a consecutive-block burst
+		// including states where the directional fees flipped between blocks — the fee is
+		// read at the parent block, so replay parity here proves the read-fees-per-block
+		// model holds under the hook (blocks 24842443..24852484)
+		"0xba262821e368c77fa5b3ae72e55b34b002dbcb5cd3a6a3fb500e010a2ce970ae",
+		"0x1e7598b86bddc85bf5a3860156e68ea3646e7a583c82215638cf1a8fde36c19e",
+		"0x4cc99354814179f54f2ccd974fa4c7ae09005a64503fca2cd103877a5f293279",
+		"0xed2045b937647b2a8e1836b30d3b0908652dbc156289086e61f90a3cc5ced313",
+		"0xa508114796045b1813e913e6e3c8390baa66c91aaa9cfad32e45f8e576f37e19",
+		"0x4e2937632261bc9d7ef6ec9e45a967140bd99fe2a4df521e8e3a4a0e0d889cc2",
+		"0x8178d2b5424a0bc0a78d8eec8feb105159f9fc4d71e692ea1bcffb17537cf5ca",
+		"0x12c0d42e916f376d6c7bb71931ecc85bfb02ad65d61e25949c0f0c788d9c91a5",
+		"0xcd53afbdf9d3cc620699806379b1ebda9299a8ce5947e186bd76e892795bac3a",
+		"0x65070ab291ac99f6532fada81feb606c0e5ba19b4e067395da7aaa3a8e5a2e72",
+		"0xbb887e4b91d979e0e2c67e138d18161c47480512ce1a256f17a95dd552c7d9d8",
 	}
 
 	rpcURL := os.Getenv("EVERLONG_CVAMM_RPC_URL")

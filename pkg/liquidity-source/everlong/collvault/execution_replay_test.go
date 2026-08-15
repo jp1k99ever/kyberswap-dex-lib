@@ -36,6 +36,15 @@ func TestReplayLiveExecutions(t *testing.T) {
 		{"0xb2bc229b4718afcbd9fd0ff4ba1b3700f51079530b637fe1cb0bea5024d6b3c5", true},  // block 24737843
 		{"0x441c39ffecd11f0eb0f3b3ac9fb7c8c2659b18cd357fa3cacd1b2b09f1439219", false}, // block 24737845
 		{"0x76fec2fd042ac015bbb241a4e00717ef00884ca7be492c963684986111d3f237", true},  // block 24737846
+		// 2026-08-14 sessions: leverage and deleverage fills settled after the CVAMM V2
+		// upgrade landed on the chain, including a consecutive-block pair (24863882/83) —
+		// the vault state moved fill-on-fill, so parity here exercises back-to-back
+		// pre-state reads, not just isolated fills.
+		{"0x403619e6db9889659c17754cc773aaa33e8fae4f62bee40bcfd80f28be96d844", true},  // block 24857295
+		{"0x9c404f52d4c6b70d13a31600d72fa6babdd8b05aeaf69bffbc45ad4724c1fb96", true},  // block 24863882
+		{"0xfa379bc6cb35249ff034641e34662cf3e7a6c5f14c810c28baafacbb755158ef", false}, // block 24863883
+		{"0x2b62e1bc16c9ab021cd657c738ec5789d711b402f93a48243fd5b211c94af80a", false}, // block 24863885
+		{"0x41bf2f405f1f409bdecb5e5bfe9df89ec1c3a7a3b506bcdd6bc54049b3b6eb6c", true},  // block 24864403
 	}
 
 	rpcURL := berachainRPCURL()
