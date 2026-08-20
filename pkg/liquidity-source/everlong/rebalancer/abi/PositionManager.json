@@ -1,0 +1,197 @@
+[
+ {
+  "inputs": [],
+  "name": "borrowerOperations",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "DEBT_GAS_COMPENSATION",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "interestRate",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "MCR",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "fetchPrice",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "activeInterestIndex",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "lastActiveIndexUpdate",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "name": "Positions",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "debt",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "coll",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "stake",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint8",
+    "name": "status",
+    "type": "uint8"
+   },
+   {
+    "internalType": "uint128",
+    "name": "arrayIndex",
+    "type": "uint128"
+   },
+   {
+    "internalType": "uint256",
+    "name": "activeInterestIndex",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "_borrower",
+    "type": "address"
+   }
+  ],
+  "name": "getPendingCollAndDebtRewards",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "collReward",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "debtReward",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "priceFeed",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "getEntireSystemBalances",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "coll",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "debt",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "price",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ }
+]

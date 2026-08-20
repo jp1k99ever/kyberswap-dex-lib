@@ -1,0 +1,68 @@
+[
+  {
+    "inputs": [],
+    "name": "alm",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "name": "collVaultShares",
+        "type": "uint256"
+      },
+      {
+        "name": "mint",
+        "type": "bool"
+      }
+    ],
+    "name": "previewTokenAmounts",
+    "outputs": [
+      {
+        "name": "stableAmount",
+        "type": "uint256"
+      },
+      {
+        "name": "volatileAmount",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "name": "collVaultSharesIn",
+        "type": "uint256"
+      },
+      {
+        "name": "maxStableIn",
+        "type": "uint256"
+      },
+      {
+        "name": "maxVolatileIn",
+        "type": "uint256"
+      },
+      {
+        "name": "minNetStableOut",
+        "type": "uint256"
+      },
+      {
+        "name": "receiver",
+        "type": "address"
+      }
+    ],
+    "name": "swapVolatileForStable",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
+]

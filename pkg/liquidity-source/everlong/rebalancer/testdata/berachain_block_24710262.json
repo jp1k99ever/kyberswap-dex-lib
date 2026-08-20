@@ -1,0 +1,120 @@
+{
+  "block": 24710262,
+  "C": "7936959166024",
+  "D": "201073143728031590252",
+  "R": "50542765636070561249468611",
+  "spread": 17500,
+  "almStableReserve": "275607506210422307574",
+  "almVolatileReserve": "422029",
+  "almSupply": "10784989677198",
+  "cvTotalAssets": "7936959166024",
+  "cvTotalSupply": "7936959166024",
+  "cvDecimalsOffset": 0,
+  "withdrawFeeBp": 0,
+  "refStableReserve": "275607506210422307574",
+  "refAssetReserve": "422029",
+  "refRawReferenceWad": "638347858752000000000000000000000",
+  "previewOracleComment": "CollateralRebalancerSwapper 0x27775EC38E2b394738B73C0D25f63e20063DF054 previewTokenAmounts(shares, mint), read at block 24712088 where every state word above is byte-identical. This is the deployed ERC-4626 -> ALM proportional split (previewMint/previewRedeem + the reserve pro-rata), the one leg of the settlement path the CollRebalancerMath grid does not cover. Zero shares revert NothingToFill on-chain; the port reports ok=false.",
+  "previewOracleBlock": 24712088,
+  "previewOracle": [
+    {
+      "shares": "1",
+      "mint": true,
+      "stable": "25554731",
+      "volatile": "1"
+    },
+    {
+      "shares": "1",
+      "mint": false,
+      "stable": "25554730",
+      "volatile": "0"
+    },
+    {
+      "shares": "1000000",
+      "mint": true,
+      "stable": "25554730645049",
+      "volatile": "1"
+    },
+    {
+      "shares": "1000000",
+      "mint": false,
+      "stable": "25554730645048",
+      "volatile": "0"
+    },
+    {
+      "shares": "79369591660",
+      "mint": true,
+      "stable": "2028268536278779363",
+      "volatile": "3106"
+    },
+    {
+      "shares": "79369591660",
+      "mint": false,
+      "stable": "2028268536278779362",
+      "volatile": "3105"
+    },
+    {
+      "shares": "1000000000000",
+      "mint": true,
+      "stable": "25554730645048393115",
+      "volatile": "39132"
+    },
+    {
+      "shares": "1000000000000",
+      "mint": false,
+      "stable": "25554730645048393114",
+      "volatile": "39131"
+    },
+    {
+      "shares": "7936959166024",
+      "mint": true,
+      "stable": "202826853628491249780",
+      "volatile": "310583"
+    },
+    {
+      "shares": "7936959166024",
+      "mint": false,
+      "stable": "202826853628491249779",
+      "volatile": "310582"
+    }
+  ],
+  "minNetDebt": "69000000000000000000",
+  "debtGasCompensation": "1000000000000000000",
+  "cdpBoundComment": "BorrowerOperations.minNetDebt() and PositionManager.DEBT_GAS_COMPENSATION() at the same state. The CDP rejects any repayment leaving net debt (total debt minus gas compensation) below the minimum, so the deleverage lot is capped at debt - gasComp - minNetDebt = 131073143728031590252. Verified at the wei on a fork: that size fills, one wei more reverts.",
+  "maxDeleverageInExpected": "131073143728031590252",
+  "executionsComment": "REAL settled fills through CollateralRebalancerSwapper on a fork at this state (the venue's own return values). Leverage is sized in CollVault shares; deleverage in gross stable debt retired. 'reverts' entries are sizes the venue refuses \u2014 the simulator must refuse them too.",
+  "leverageExecutions": [
+    {
+      "shares": "1000000000",
+      "volatileIn": "40",
+      "netStableOut": "24040559480576106"
+    },
+    {
+      "shares": "100000000000",
+      "volatileIn": "3914",
+      "netStableOut": "2388683345279162575"
+    },
+    {
+      "shares": "946747252431",
+      "volatileIn": "37048",
+      "netStableOut": "21397458156696544317"
+    }
+  ],
+  "leverageRevertsAboveMaxLot": "1000000000000",
+  "deleverageExecutions": [
+    {
+      "grossStableIn": "1000000000000000000",
+      "netStableIn": "500660601604514559",
+      "volatileOut": "764"
+    },
+    {
+      "grossStableIn": "100000000000000000000",
+      "netStableIn": "53152561054596727705",
+      "volatileOut": "71735"
+    }
+  ],
+  "deleverageRevertsAtFullDebt": "201073143728031590252",
+  "maxLotBoundaryComment": "The physical-CR max lot, verified against the venue by binary search on a fork: at the reference price below, the largest CollVault-share lot the swapper accepts is exactly this, and one share more reverts. The reference oracle had moved by then, so the price is carried explicitly rather than reusing refRawReferenceWad above.",
+  "maxLotBoundaryRefRawReferenceWad": "641647691485400000000000000000000",
+  "maxLotBoundaryExpected": "980172488774"
+}
