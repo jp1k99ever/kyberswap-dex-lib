@@ -4,10 +4,12 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/require"
 
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/entity"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 const (
@@ -18,14 +20,26 @@ const (
 	unitCaller   = "0x0000000000000000000000000000000000000005"
 )
 
-func unitStaticExtra(wadOffset string) string {
-	return `{"profileVersion":1,"psm":"` + unitPSM + `","debtToken":"` + unitDebt +
-		`","stable":"` + unitStable + `","metaCore":"` + unitMetaCore +
-		`","feeCaller":"` + unitCaller + `","feeCallerCodeHash":"` + productionFeeCallerCodeHash +
-		`","psmCodeHash":"` + productionPSMCodeHash +
-		`","feeHook":"` + productionFeeHookAddress +
-		`","feeHookCodeHash":"` + productionFeeHookCodeHash +
-		`","listedStableCount":1,"wadOffset":` + wadOffset + `}`
+func unitConfig() *Config {
+	return &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
+		PSM: unitPSM, Stables: []string{unitStable}, FeeCaller: unitCaller}
+}
+
+func unitStaticExtra(t *testing.T, wadOffset string) string {
+	t.Helper()
+	offset, ok := new(big.Int).SetString(wadOffset, 10)
+	require.True(t, ok)
+	require.True(t, offset.IsUint64())
+	snapshot := validProfileSnapshot()
+	snapshot.WadOffset = offset.Uint64()
+	cfg := unitConfig()
+	configHash, err := psmConfigHash(cfg)
+	require.NoError(t, err)
+	static, err := staticExtraFromProfile(snapshot, cfg, configHash)
+	require.NoError(t, err)
+	b, err := json.Marshal(static)
+	require.NoError(t, err)
+	return string(b)
 }
 
 // Vectors are hand-derived from PermissionlessPSM.sol (previewDeposit/previewRedeem +
@@ -43,10 +57,11 @@ func simWith(t *testing.T, availMint, minted, reserve, entryBp, exitBp string, p
 			{Address: unitStable, Decimals: 6, Swappable: true},
 		},
 		Reserves:    entity.PoolReserves{"0", "0"},
-		StaticExtra: unitStaticExtra("1000000000000"),
+		StaticExtra: unitStaticExtra(t, "1000000000000"),
 		Extra: `{"paused":` + map[bool]string{true: "true", false: "false"}[paused] + `,"psmBonded":true` +
 			`,"entryBp":` + entryBp + `,"exitBp":` + exitBp +
 			`,"availMint":` + availMint + `,"minted":` + minted + `,"reserve":` + reserve + `}`,
+		BlockNumber: 1,
 	}
 	sim, err := NewPoolSimulator(p)
 	require.NoError(t, err)
@@ -66,11 +81,12 @@ func TestEqualDecimalsUnscaled(t *testing.T) {
 			{Address: unitStable, Decimals: 18, Swappable: true},
 		},
 		Reserves:    entity.PoolReserves{"0", "0"},
-		StaticExtra: unitStaticExtra("1"),
+		StaticExtra: unitStaticExtra(t, "1"),
 		// 5 bp both directions, matching the deployed fee law's current output.
 		Extra: `{"paused":false,"psmBonded":true,"entryBp":5,"exitBp":5,` +
 			`"availMint":1000000000000000000000,"minted":500000000000000000000,` +
 			`"reserve":500000000000000000000}`,
+		BlockNumber: 1,
 	}
 	s, err := NewPoolSimulator(p)
 	require.NoError(t, err)
@@ -225,6 +241,7 @@ func TestSimulatorRejectsPreAttestationStaticExtra(t *testing.T) {
 		Reserves:    entity.PoolReserves{"0", "0"},
 		StaticExtra: `{"psm":"` + unitPSM + `","wadOffset":1}`,
 		Extra:       `{"paused":false,"psmBonded":true,"entryBp":5,"exitBp":5,"availMint":1,"minted":1,"reserve":1}`,
+		BlockNumber: 1,
 	}
 	_, err := NewPoolSimulator(p)
 	require.ErrorIs(t, err, ErrUnsupportedProfile)
@@ -253,6 +270,27 @@ func TestCalcAmountOutRejectsBypassedCorruptState(t *testing.T) {
 		{"negative book", func(s *PoolSimulator) { s.Extra.DebtTokenMinted = big.NewInt(-1) }, ErrInvalidSnapshot},
 		{"negative reserve", func(s *PoolSimulator) { s.Extra.AvailableReserve = big.NewInt(-1) }, ErrInvalidSnapshot},
 		{"token binding", func(s *PoolSimulator) { s.Info.Tokens[0] = unitStable }, ErrUnsupportedProfile},
+		{"pool address", func(s *PoolSimulator) { s.Info.Address = unitPSM }, ErrUnsupportedProfile},
+		{"exchange", func(s *PoolSimulator) { s.Info.Exchange = "detached" }, ErrUnsupportedProfile},
+		{"pool type", func(s *PoolSimulator) { s.Info.Type = "detached" }, ErrUnsupportedProfile},
+		{"zero block", func(s *PoolSimulator) { s.Info.BlockNumber = 0 }, ErrUnsupportedProfile},
+		{"negative deposit gas", func(s *PoolSimulator) { s.StaticExtra.GasDeposit = -1 }, ErrUnsupportedProfile},
+		{"negative redeem gas", func(s *PoolSimulator) { s.StaticExtra.GasRedeem = -1 }, ErrUnsupportedProfile},
+		{"config hash", func(s *PoolSimulator) { s.StaticExtra.ConfigHash = "0x01" }, ErrUnsupportedProfile},
+		{"profile hash", func(s *PoolSimulator) { s.StaticExtra.ProfileHash = "0x01" }, ErrUnsupportedProfile},
+		{"dual debt-token mutation", func(s *PoolSimulator) {
+			s.StaticExtra.DebtToken = "0x0000000000000000000000000000000000000006"
+			s.Info.Tokens[0] = s.StaticExtra.DebtToken
+		}, ErrUnsupportedProfile},
+		{"dual stable mutation", func(s *PoolSimulator) {
+			s.StaticExtra.Stable = "0x0000000000000000000000000000000000000006"
+			s.Info.Tokens[1] = s.StaticExtra.Stable
+			s.Info.Address = unitPSM + "-" + s.StaticExtra.Stable
+		}, ErrUnsupportedProfile},
+		{"dual psm mutation", func(s *PoolSimulator) {
+			s.StaticExtra.PSM = "0x0000000000000000000000000000000000000006"
+			s.Info.Address = s.StaticExtra.PSM + "-" + unitStable
+		}, ErrUnsupportedProfile},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -2,7 +2,6 @@ package everlongpsm
 
 import (
 	"math/big"
-	"strings"
 
 	"github.com/goccy/go-json"
 	"github.com/samber/lo"
@@ -41,15 +40,11 @@ func NewPoolSimulator(p entity.Pool) (*PoolSimulator, error) {
 	if err := json.Unmarshal([]byte(p.StaticExtra), &staticExtra); err != nil {
 		return nil, err
 	}
-	if err := staticExtra.validateProductionProfile(); err != nil {
-		return nil, err
-	}
 	if err := extra.validateProductionSnapshot(); err != nil {
 		return nil, err
 	}
-	if len(p.Tokens) != 2 || !strings.EqualFold(p.Tokens[0].Address, staticExtra.DebtToken) ||
-		!strings.EqualFold(p.Tokens[1].Address, staticExtra.Stable) {
-		return nil, ErrUnsupportedProfile
+	if err := validateEntityProfile(p, &staticExtra); err != nil {
+		return nil, err
 	}
 	return &PoolSimulator{
 		Pool: pool.Pool{Info: pool.PoolInfo{
@@ -97,11 +92,7 @@ func (s *PoolSimulator) validateProductionSnapshot() error {
 	if s == nil {
 		return ErrInvalidSnapshot
 	}
-	if err := s.StaticExtra.validateProductionProfile(); err != nil {
-		return err
-	}
-	if len(s.Info.Tokens) != 2 || !strings.EqualFold(s.Info.Tokens[0], s.StaticExtra.DebtToken) ||
-		!strings.EqualFold(s.Info.Tokens[1], s.StaticExtra.Stable) {
+	if !s.validPoolProfile() {
 		return ErrUnsupportedProfile
 	}
 	return s.Extra.validateProductionSnapshot()

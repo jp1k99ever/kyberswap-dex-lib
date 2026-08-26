@@ -160,8 +160,9 @@ func TestListerRejectsEmptyCodeFeeCaller(t *testing.T) {
 	require.Empty(t, pools)
 }
 
-// TestTrackerStampsBlockNumber: the snapshot must carry the exact block shared by the
-// Multicall state and out-of-band code attestation.
+// TestTrackerStampsBlockNumber: the lister and tracker snapshots must carry the exact
+// block shared by Multicall state and out-of-band code attestation. A zero-block cache
+// is not a request for repair: it is detached state and must fail before RPC.
 func TestTrackerStampsBlockNumber(t *testing.T) {
 	test.SkipCI(t)
 	ctx := context.Background()
@@ -172,12 +173,16 @@ func TestTrackerStampsBlockNumber(t *testing.T) {
 
 	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
-	p := pools[0]
-	p.BlockNumber = 0
+	require.NotZero(t, pools[0].BlockNumber, "the lister must stamp the block it read at")
 
-	tracked, err := NewPoolTracker(cfg, client).GetNewPoolState(ctx, p, pool.GetNewPoolStateParams{})
+	tracked, err := NewPoolTracker(cfg, client).GetNewPoolState(ctx, pools[0], pool.GetNewPoolStateParams{})
 	require.NoError(t, err)
 	require.NotZero(t, tracked.BlockNumber, "the tracker must stamp the block it read at")
+
+	detached := pools[0]
+	detached.BlockNumber = 0
+	_, err = NewPoolTracker(cfg, client).GetNewPoolState(ctx, detached, pool.GetNewPoolStateParams{})
+	require.ErrorIs(t, err, ErrProfileChanged)
 }
 
 // TestListerProfileCursor re-attests the live profile on every poll, emits nothing when

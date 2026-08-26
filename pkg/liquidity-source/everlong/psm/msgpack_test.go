@@ -38,6 +38,10 @@ func TestMsgpackRoundTrip(t *testing.T) {
 	require.Equal(t, productionFeeHookCodeHash, decoded.StaticExtra.FeeHookCodeHash)
 	require.Equal(t, unitCaller, decoded.StaticExtra.FeeCaller)
 	require.Equal(t, productionFeeCallerCodeHash, decoded.StaticExtra.FeeCallerCodeHash)
+	require.Equal(t, DexType, decoded.StaticExtra.DexID)
+	require.NotZero(t, decoded.StaticExtra.ChainID)
+	require.NotEmpty(t, decoded.StaticExtra.ConfigHash)
+	require.NotEmpty(t, decoded.StaticExtra.ProfileHash)
 	got, err := decoded.CalcAmountOut(params)
 	require.NoError(t, err)
 	require.Equal(t, want.TokenAmountOut.Amount, got.TokenAmountOut.Amount)
@@ -47,7 +51,17 @@ func TestMsgpackRoundTrip(t *testing.T) {
 	require.ErrorIs(t, err, ErrUnsupportedProfile)
 
 	decoded.StaticExtra.ProfileVersion = productionProfileVersion
-	decoded.Extra.AvailableReserve = big.NewInt(-1)
+	// A current-format cache cross-wire can mutate both advertised Info and the
+	// matching StaticExtra. The persisted profile digest must still catch it.
+	decoded.StaticExtra.DebtToken = "0x0000000000000000000000000000000000000006"
+	decoded.Info.Tokens[0] = decoded.StaticExtra.DebtToken
 	_, err = decoded.CalcAmountOut(params)
-	require.ErrorIs(t, err, ErrInvalidSnapshot)
+	require.ErrorIs(t, err, ErrUnsupportedProfile)
+
+	decoded.StaticExtra.DebtToken = unitDebt
+	decoded.Info.Tokens[0] = unitDebt
+	decoded.StaticExtra.PSM = "0x0000000000000000000000000000000000000006"
+	decoded.Info.Address = decoded.StaticExtra.PSM + "-" + decoded.StaticExtra.Stable
+	_, err = decoded.CalcAmountOut(params)
+	require.ErrorIs(t, err, ErrUnsupportedProfile)
 }

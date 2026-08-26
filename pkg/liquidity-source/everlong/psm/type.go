@@ -2,6 +2,8 @@ package everlongpsm
 
 import (
 	"math/big"
+
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 // StaticExtra is immutable per pool (one pool per whitelisted stable).
@@ -38,6 +40,14 @@ type StaticExtra struct {
 	// GasDeposit / GasRedeem override the estimated defaults when non-zero.
 	GasDeposit int64 `json:"gasDep,omitempty"`
 	GasRedeem  int64 `json:"gasRed,omitempty"`
+	// DexID/ChainID and the two hashes make a persisted pool self-identifying. They
+	// are appended so caches encoded before the production profile was complete
+	// decode without shifting the established msgpack array fields and then fail the
+	// mandatory hash checks.
+	DexID       string              `json:"dexId"`
+	ChainID     valueobject.ChainID `json:"chainId"`
+	ConfigHash  string              `json:"configHash"`
+	ProfileHash string              `json:"profileHash"`
 }
 
 // Extra is the per-refresh snapshot the simulator prices from.

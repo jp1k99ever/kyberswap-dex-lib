@@ -48,6 +48,13 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		}
 	}
 
+	// Validate and fingerprint the entire current execution configuration before
+	// touching RPC. Negative gas, an empty chain/exchange or a removed/rotated venue
+	// cannot be allowed to manufacture a persisted profile.
+	configHash, err := psmConfigHash(u.config)
+	if err != nil {
+		return nil, metadataBytes, err
+	}
 	psm, stable, feeCaller, err := configuredAddresses(u.config)
 	if err != nil {
 		return nil, metadataBytes, err
@@ -93,7 +100,7 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 	if err != nil {
 		return nil, metadataBytes, err
 	}
-	if resp.BlockNumber == nil {
+	if resp.BlockNumber == nil || resp.BlockNumber.Sign() <= 0 || !resp.BlockNumber.IsUint64() {
 		return nil, metadataBytes, ErrInvalidSnapshot
 	}
 
@@ -119,9 +126,11 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		return nil, metadataBytes, err
 	}
 
-	static := staticExtraFromProfile(snapshot, u.config.GasDeposit, u.config.GasRedeem)
-	fingerprint := profileFingerprint(static, u.config.DexID, uint64(u.config.ChainID))
-	if metadata.Profile == fingerprint {
+	static, err := staticExtraFromProfile(snapshot, u.config, configHash)
+	if err != nil {
+		return nil, metadataBytes, err
+	}
+	if metadata.Profile == static.ProfileHash {
 		return nil, metadataBytes, nil
 	}
 	staticExtra, err := json.Marshal(static)
@@ -129,7 +138,10 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		return nil, metadataBytes, err
 	}
 
-	poolAddress := hexutil.Encode(psm[:]) + "-" + hexutil.Encode(stable[:])
+	poolAddress, ok := canonicalPoolAddress(hexutil.Encode(psm[:]), hexutil.Encode(stable[:]))
+	if !ok {
+		return nil, metadataBytes, ErrUnsupportedProfile
+	}
 	pools := []entity.Pool{{
 		Address:   poolAddress,
 		Exchange:  u.config.DexID,
@@ -145,7 +157,7 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		BlockNumber: resp.BlockNumber.Uint64(),
 	}}
 
-	metadata.Profile = fingerprint
+	metadata.Profile = static.ProfileHash
 	newMetadataBytes, err := json.Marshal(metadata)
 	if err != nil {
 		return nil, metadataBytes, err

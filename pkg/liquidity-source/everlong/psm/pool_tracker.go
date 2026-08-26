@@ -53,20 +53,15 @@ func (t *PoolTracker) getNewPoolState(ctx context.Context, p entity.Pool,
 	if err := json.Unmarshal([]byte(p.StaticExtra), &staticExtra); err != nil {
 		return p, err
 	}
-	if err := staticExtra.validateProductionProfile(); err != nil {
+	// Reject detached/corrupt cache entries and removed or rotated configuration before
+	// creating the first request. Otherwise a stale pool can survive indefinitely as
+	// long as its old contract graph remains callable.
+	if err := validateTrackerProfile(p, &staticExtra, t.config); err != nil {
 		return p, err
 	}
 	psm, stable, feeCaller, err := configuredAddresses(t.config)
 	if err != nil {
 		return p, err
-	}
-	if len(p.Tokens) != 2 || !common.IsHexAddress(p.Tokens[0].Address) ||
-		!common.IsHexAddress(p.Tokens[1].Address) ||
-		common.HexToAddress(p.Tokens[0].Address) != common.HexToAddress(staticExtra.DebtToken) ||
-		common.HexToAddress(p.Tokens[1].Address) != stable ||
-		common.HexToAddress(staticExtra.PSM) != psm || common.HexToAddress(staticExtra.Stable) != stable ||
-		common.HexToAddress(staticExtra.FeeCaller) != feeCaller {
-		return p, ErrProfileChanged
 	}
 	if overrides != nil {
 		// Kept defensive for direct internal callers; the public override method rejects
@@ -124,7 +119,7 @@ func (t *PoolTracker) getNewPoolState(ctx context.Context, p entity.Pool,
 	if err != nil {
 		return p, err
 	}
-	if resp.BlockNumber == nil {
+	if resp.BlockNumber == nil || resp.BlockNumber.Sign() <= 0 || !resp.BlockNumber.IsUint64() {
 		return p, ErrInvalidSnapshot
 	}
 	for _, ok := range resp.Result {

@@ -3,7 +3,6 @@ package everlongpsm
 import (
 	"context"
 	"math/big"
-	"strconv"
 	"strings"
 
 	"github.com/KyberNetwork/ethrpc"
@@ -11,10 +10,14 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/goccy/go-json"
+
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/entity"
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 const (
-	productionProfileVersion uint8 = 1
+	productionProfileVersion uint8 = 2
 	productionListedStables        = 1
 	// Direct, non-proxy PermissionlessPSM runtime deployed on Berachain at
 	// 0x0999417c0f9ded4356B099bcC83A16437B841323. Pinning the venue semantics is
@@ -35,6 +38,45 @@ const (
 	// reviewed and a new profile version is shipped.
 	productionFeeCallerCodeHash = "0xbb3b9a67f1812ab434d456acdd02c65fc12621e4ed7dd4f88c20d5b3dc32ac6c"
 )
+
+// psmListingProfile binds every operator-controlled input which can change execution
+// identity or gas. A pool removed from config, moved to another chain/exchange, or
+// rotated to another caller/stable must be rejected by the tracker before it performs
+// any RPC.
+type psmListingProfile struct {
+	Version    uint8               `json:"version"`
+	DexID      string              `json:"dexId"`
+	ChainID    valueobject.ChainID `json:"chainId"`
+	PSM        string              `json:"psm"`
+	Stable     string              `json:"stable"`
+	FeeCaller  string              `json:"feeCaller"`
+	GasDeposit int64               `json:"gasDeposit"`
+	GasRedeem  int64               `json:"gasRedeem"`
+}
+
+// psmStaticProfile binds every immutable word a decoded simulator trusts. ConfigHash
+// alone cannot prevent a cache cross-wire from changing both an entity token/address
+// and its matching StaticExtra; ProfileHash makes that current-format mutation fail
+// closed on the first quote.
+type psmStaticProfile struct {
+	Version           uint8               `json:"version"`
+	DexID             string              `json:"dexId"`
+	ChainID           valueobject.ChainID `json:"chainId"`
+	ConfigHash        string              `json:"configHash"`
+	PSM               string              `json:"psm"`
+	PSMCodeHash       string              `json:"psmCodeHash"`
+	DebtToken         string              `json:"debtToken"`
+	Stable            string              `json:"stable"`
+	MetaCore          string              `json:"metaCore"`
+	FeeCaller         string              `json:"feeCaller"`
+	FeeCallerCodeHash string              `json:"feeCallerCodeHash"`
+	FeeHook           string              `json:"feeHook"`
+	FeeHookCodeHash   string              `json:"feeHookCodeHash"`
+	ListedStableCount int                 `json:"listedStableCount"`
+	WadOffset         string              `json:"wadOffset"`
+	GasDeposit        int64               `json:"gasDeposit"`
+	GasRedeem         int64               `json:"gasRedeem"`
+}
 
 type profileSnapshot struct {
 	PSM                 common.Address
@@ -70,6 +112,78 @@ func configuredAddresses(cfg *Config) (psm, stable, feeCaller common.Address, er
 	}
 	return common.HexToAddress(cfg.PSM), common.HexToAddress(cfg.Stables[0]),
 		common.HexToAddress(cfg.FeeCaller), nil
+}
+
+func normalizedProfileAddress(raw string) (string, bool) {
+	if !common.IsHexAddress(raw) {
+		return "", false
+	}
+	address := common.HexToAddress(raw)
+	if address == (common.Address{}) {
+		return "", false
+	}
+	return hexutil.Encode(address[:]), true
+}
+
+func psmConfigHash(cfg *Config) (string, error) {
+	psm, stable, feeCaller, err := configuredAddresses(cfg)
+	if err != nil {
+		return "", err
+	}
+	if cfg.DexID == "" || cfg.ChainID == 0 || cfg.GasDeposit < 0 || cfg.GasRedeem < 0 {
+		return "", ErrUnsupportedProfile
+	}
+	payload, err := json.Marshal(psmListingProfile{
+		Version: productionProfileVersion, DexID: cfg.DexID, ChainID: cfg.ChainID,
+		PSM: hexutil.Encode(psm[:]), Stable: hexutil.Encode(stable[:]),
+		FeeCaller: hexutil.Encode(feeCaller[:]), GasDeposit: cfg.GasDeposit,
+		GasRedeem: cfg.GasRedeem,
+	})
+	if err != nil {
+		return "", err
+	}
+	return crypto.Keccak256Hash(payload).Hex(), nil
+}
+
+func staticConfigHash(s *StaticExtra) (string, error) {
+	if s == nil {
+		return "", ErrUnsupportedProfile
+	}
+	return psmConfigHash(&Config{
+		DexID: s.DexID, ChainID: s.ChainID, PSM: s.PSM,
+		Stables: []string{s.Stable}, FeeCaller: s.FeeCaller,
+		GasDeposit: s.GasDeposit, GasRedeem: s.GasRedeem,
+	})
+}
+
+func staticProfileHash(s *StaticExtra) (string, error) {
+	if s == nil || s.WadOffset == nil || s.WadOffset.Sign() <= 0 || s.DexID == "" ||
+		s.ChainID == 0 || s.GasDeposit < 0 || s.GasRedeem < 0 {
+		return "", ErrUnsupportedProfile
+	}
+	psm, ok0 := normalizedProfileAddress(s.PSM)
+	debtToken, ok1 := normalizedProfileAddress(s.DebtToken)
+	stable, ok2 := normalizedProfileAddress(s.Stable)
+	metaCore, ok3 := normalizedProfileAddress(s.MetaCore)
+	feeCaller, ok4 := normalizedProfileAddress(s.FeeCaller)
+	feeHook, ok5 := normalizedProfileAddress(s.FeeHook)
+	if !ok0 || !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || debtToken == stable {
+		return "", ErrUnsupportedProfile
+	}
+	payload, err := json.Marshal(psmStaticProfile{
+		Version: s.ProfileVersion, DexID: s.DexID, ChainID: s.ChainID,
+		ConfigHash: strings.ToLower(s.ConfigHash), PSM: psm,
+		PSMCodeHash: strings.ToLower(s.PSMCodeHash), DebtToken: debtToken,
+		Stable: stable, MetaCore: metaCore, FeeCaller: feeCaller,
+		FeeCallerCodeHash: strings.ToLower(s.FeeCallerCodeHash), FeeHook: feeHook,
+		FeeHookCodeHash:   strings.ToLower(s.FeeHookCodeHash),
+		ListedStableCount: s.ListedStableCount, WadOffset: s.WadOffset.String(),
+		GasDeposit: s.GasDeposit, GasRedeem: s.GasRedeem,
+	})
+	if err != nil {
+		return "", err
+	}
+	return crypto.Keccak256Hash(payload).Hex(), nil
 }
 
 func (s *profileSnapshot) validate() error {
@@ -153,8 +267,11 @@ func decodePSMBond(result []byte) (bool, error) {
 	return bonded, nil
 }
 
-func staticExtraFromProfile(s *profileSnapshot, gasDeposit, gasRedeem int64) StaticExtra {
-	return StaticExtra{
+func staticExtraFromProfile(s *profileSnapshot, cfg *Config, configHash string) (StaticExtra, error) {
+	if s == nil || cfg == nil {
+		return StaticExtra{}, ErrUnsupportedProfile
+	}
+	static := StaticExtra{
 		ProfileVersion:    productionProfileVersion,
 		PSM:               hexutil.Encode(s.PSM[:]),
 		PSMCodeHash:       productionPSMCodeHash,
@@ -167,14 +284,27 @@ func staticExtraFromProfile(s *profileSnapshot, gasDeposit, gasRedeem int64) Sta
 		FeeHookCodeHash:   productionFeeHookCodeHash,
 		ListedStableCount: productionListedStables,
 		WadOffset:         new(big.Int).SetUint64(s.WadOffset),
-		GasDeposit:        gasDeposit,
-		GasRedeem:         gasRedeem,
+		GasDeposit:        cfg.GasDeposit,
+		GasRedeem:         cfg.GasRedeem,
+		DexID:             cfg.DexID,
+		ChainID:           cfg.ChainID,
+		ConfigHash:        configHash,
 	}
+	profileHash, err := staticProfileHash(&static)
+	if err != nil {
+		return StaticExtra{}, err
+	}
+	static.ProfileHash = profileHash
+	if err := static.validateProductionProfile(); err != nil {
+		return StaticExtra{}, err
+	}
+	return static, nil
 }
 
 func (s *StaticExtra) validateProductionProfile() error {
 	if s == nil || s.ProfileVersion != productionProfileVersion ||
 		s.ListedStableCount != productionListedStables || s.WadOffset == nil || s.WadOffset.Sign() <= 0 ||
+		s.DexID == "" || s.ChainID == 0 || s.GasDeposit < 0 || s.GasRedeem < 0 ||
 		!validNonzeroAddress(s.PSM) || !validNonzeroAddress(s.DebtToken) ||
 		!validNonzeroAddress(s.Stable) || !validNonzeroAddress(s.MetaCore) ||
 		!validNonzeroAddress(s.FeeCaller) ||
@@ -182,6 +312,14 @@ func (s *StaticExtra) validateProductionProfile() error {
 		!strings.EqualFold(s.FeeCallerCodeHash, productionFeeCallerCodeHash) ||
 		!strings.EqualFold(s.FeeHook, productionFeeHookAddress) ||
 		!strings.EqualFold(s.FeeHookCodeHash, productionFeeHookCodeHash) {
+		return ErrUnsupportedProfile
+	}
+	wantConfigHash, err := staticConfigHash(s)
+	if err != nil || !strings.EqualFold(wantConfigHash, s.ConfigHash) {
+		return ErrUnsupportedProfile
+	}
+	wantProfileHash, err := staticProfileHash(s)
+	if err != nil || !strings.EqualFold(wantProfileHash, s.ProfileHash) {
 		return ErrUnsupportedProfile
 	}
 	return nil
@@ -209,19 +347,62 @@ func validNonzeroAddress(value string) bool {
 	return common.IsHexAddress(value) && common.HexToAddress(value) != (common.Address{})
 }
 
-// profileFingerprint is the listing cursor. Mutable scalar rates are deliberately not
-// included: the tracker samples them every block. Identity, caller, decimal scale and
-// gas configuration require a replacement pool so persisted StaticExtra cannot lag.
-func profileFingerprint(s StaticExtra, dexID string, chainID uint64) string {
-	parts := []string{
-		strings.ToLower(dexID), strconv.FormatUint(chainID, 10),
-		strconv.FormatUint(uint64(s.ProfileVersion), 10), strings.ToLower(s.PSM),
-		strings.ToLower(s.PSMCodeHash),
-		strings.ToLower(s.DebtToken), strings.ToLower(s.Stable), strings.ToLower(s.MetaCore),
-		strings.ToLower(s.FeeCaller), strings.ToLower(s.FeeCallerCodeHash),
-		strings.ToLower(s.FeeHook), strings.ToLower(s.FeeHookCodeHash),
-		strconv.Itoa(s.ListedStableCount), s.WadOffset.String(),
-		strconv.FormatInt(s.GasDeposit, 10), strconv.FormatInt(s.GasRedeem, 10),
+func canonicalPoolAddress(psm, stable string) (string, bool) {
+	psmAddress, ok0 := normalizedProfileAddress(psm)
+	stableAddress, ok1 := normalizedProfileAddress(stable)
+	return psmAddress + "-" + stableAddress, ok0 && ok1
+}
+
+func validStaticPoolProfile(s *StaticExtra, address, exchange, poolType string,
+	blockNumber uint64, tokens []string) bool {
+	if s == nil || s.validateProductionProfile() != nil || poolType != DexType ||
+		exchange != s.DexID || blockNumber == 0 || len(tokens) != 2 {
+		return false
 	}
-	return crypto.Keccak256Hash([]byte(strings.Join(parts, "|"))).Hex()
+	wantAddress, ok := canonicalPoolAddress(s.PSM, s.Stable)
+	if !ok || !strings.EqualFold(wantAddress, address) {
+		return false
+	}
+	debtToken, ok0 := normalizedProfileAddress(tokens[0])
+	stable, ok1 := normalizedProfileAddress(tokens[1])
+	wantDebt, ok2 := normalizedProfileAddress(s.DebtToken)
+	wantStable, ok3 := normalizedProfileAddress(s.Stable)
+	return ok0 && ok1 && ok2 && ok3 && strings.EqualFold(debtToken, wantDebt) &&
+		strings.EqualFold(stable, wantStable)
+}
+
+func validateEntityProfile(p entity.Pool, s *StaticExtra) error {
+	tokens := make([]string, len(p.Tokens))
+	for i, token := range p.Tokens {
+		if token == nil {
+			return ErrUnsupportedProfile
+		}
+		tokens[i] = token.Address
+	}
+	if !validStaticPoolProfile(s, p.Address, p.Exchange, p.Type, p.BlockNumber, tokens) {
+		return ErrUnsupportedProfile
+	}
+	return nil
+}
+
+// validateTrackerProfile retires removed or rotated configuration before the tracker
+// creates an RPC request. Static self-consistency is insufficient here: only current
+// pool-service configuration has authority to keep a cached venue active.
+func validateTrackerProfile(p entity.Pool, s *StaticExtra, cfg *Config) error {
+	if validateEntityProfile(p, s) != nil || cfg == nil || cfg.DexID != s.DexID || cfg.ChainID != s.ChainID {
+		return ErrProfileChanged
+	}
+	wantConfigHash, err := psmConfigHash(cfg)
+	if err != nil || !strings.EqualFold(wantConfigHash, s.ConfigHash) {
+		return ErrProfileChanged
+	}
+	return nil
+}
+
+func (s *PoolSimulator) validPoolProfile() bool {
+	if s == nil {
+		return false
+	}
+	return validStaticPoolProfile(&s.StaticExtra, s.Info.Address, s.Info.Exchange,
+		s.Info.Type, s.Info.BlockNumber, s.Info.Tokens)
 }
