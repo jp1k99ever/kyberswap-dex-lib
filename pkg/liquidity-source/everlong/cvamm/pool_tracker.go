@@ -76,7 +76,7 @@ func (t *PoolTracker) GetNewPoolStateAtBlock(ctx context.Context, p entity.Pool,
 	if err := json.Unmarshal([]byte(p.StaticExtra), &se); err != nil {
 		return p, err
 	}
-	if err := validateEntityProfile(p, &se); err != nil {
+	if err := validateTrackerProfile(p, &se, t.config); err != nil {
 		return p, err
 	}
 	rd := newRPCState()
@@ -201,7 +201,7 @@ func (t *PoolTracker) LazyNewPoolState(ctx context.Context, p entity.Pool,
 	if err := json.Unmarshal([]byte(p.StaticExtra), &se); err != nil {
 		return nil, nil, err
 	}
-	if err := validateEntityProfile(p, &se); err != nil {
+	if err := validateTrackerProfile(p, &se, t.config); err != nil {
 		return nil, nil, err
 	}
 	rd := newRPCState()
@@ -239,7 +239,7 @@ func (t *PoolTracker) getNewPoolState(ctx context.Context, p entity.Pool,
 	if err := json.Unmarshal([]byte(p.StaticExtra), &se); err != nil {
 		return p, err
 	}
-	if err := validateEntityProfile(p, &se); err != nil {
+	if err := validateTrackerProfile(p, &se, t.config); err != nil {
 		return p, err
 	}
 	rd := newRPCState()

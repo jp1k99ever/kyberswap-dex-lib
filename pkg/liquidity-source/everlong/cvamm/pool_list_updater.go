@@ -144,7 +144,7 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		token0 := hexutil.Encode(tokens0[i][:])
 		token1 := hexutil.Encode(tokens1[i][:])
 		adapter, _ := normalizeAddress(alm.Adapter, true)
-		staticExtra, err := json.Marshal(StaticExtra{
+		se := StaticExtra{
 			ProfileVersion:         cvammProfileVersion,
 			DexID:                  u.config.DexID,
 			ChainID:                u.config.ChainID,
@@ -158,7 +158,12 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 			Adapter:                adapter,
 			GasStableIn:            alm.GasStableIn,
 			GasVolatileIn:          alm.GasVolatileIn,
-		})
+		}
+		se.ProfileHash, err = staticProfileHash(&se)
+		if err != nil {
+			return nil, metadataBytes, err
+		}
+		staticExtra, err := json.Marshal(se)
 		if err != nil {
 			return nil, metadataBytes, err
 		}

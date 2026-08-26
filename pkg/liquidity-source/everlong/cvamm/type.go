@@ -23,6 +23,7 @@ type StaticExtra struct {
 	Token0         string              `json:"token0"`
 	Token1         string              `json:"token1"`
 	ConfigHash     string              `json:"configHash"`
+	ProfileHash    string              `json:"profileHash"`
 	// FeeHook resolved at listing. The fee-law terms live on it, and pinning it here is
 	// what lets them be read in the SAME round as everything else — a second round could
 	// not run on the batched path, which left that path without a fee law at all. The

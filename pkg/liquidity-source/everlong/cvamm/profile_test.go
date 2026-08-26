@@ -3,6 +3,7 @@ package everlongcvamm
 import (
 	"testing"
 
+	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/require"
 
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
@@ -53,4 +54,52 @@ func TestConfigHashCanonicalizesAddresses(t *testing.T) {
 	hb, err := cvammConfigHash(DexType, valueobject.ChainIDBerachain, b)
 	require.NoError(t, err)
 	require.Equal(t, ha, hb)
+}
+
+func TestConfigHashRejectsInvalidExecutionConfig(t *testing.T) {
+	for _, tc := range []struct {
+		dex string
+		alm ALMConfig
+	}{
+		{"", ALMConfig{Address: testALM}},
+		{DexType, ALMConfig{Address: testALM, GasStableIn: -1}},
+		{DexType, ALMConfig{Address: testALM, GasVolatileIn: -1}},
+		{DexType, ALMConfig{Address: "not-an-address"}},
+		{DexType, ALMConfig{Address: testALM, Adapter: "not-an-address"}},
+	} {
+		_, err := cvammConfigHash(tc.dex, valueobject.ChainIDBerachain, tc.alm)
+		require.ErrorIs(t, err, ErrInvalidProfile)
+	}
+}
+
+func TestStaticProfileHashBindsDiscoveredIdentity(t *testing.T) {
+	var base StaticExtra
+	require.NoError(t, json.Unmarshal([]byte(testStaticExtra(t)), &base))
+	want := base.ProfileHash
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*StaticExtra)
+	}{
+		{"token0", func(se *StaticExtra) {
+			se.Token0 = "0x0000000000000000000000000000000000000003"
+		}},
+		{"token1", func(se *StaticExtra) {
+			se.Token1 = "0x0000000000000000000000000000000000000003"
+		}},
+		{"implementation", func(se *StaticExtra) {
+			se.Implementation = "0x0000000000000000000000000000000000000003"
+		}},
+		{"implementation hash", func(se *StaticExtra) {
+			se.ImplementationCodeHash = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := base
+			tc.mutate(&changed)
+			got, err := staticProfileHash(&changed)
+			require.NoError(t, err)
+			require.NotEqual(t, want, got)
+		})
+	}
 }

@@ -42,6 +42,40 @@ func TestEmptyStateOverridesNormalizeToExactPath(t *testing.T) {
 	}
 }
 
+func TestTrackerRejectsStaleConfiguredProfileBeforeRPC(t *testing.T) {
+	sIn, _ := fillableCases(t)
+	p := poolEntityFromFixture(t, sIn[0], nil)
+	client := ethrpc.New("http://127.0.0.1:1")
+
+	valid := &Config{DexID: DexType, ALMs: []ALMConfig{{Address: testALM}}}
+	var se StaticExtra
+	require.NoError(t, json.Unmarshal([]byte(p.StaticExtra), &se))
+	require.NoError(t, validateTrackerProfile(p, &se, valid))
+
+	for _, tc := range []struct {
+		name string
+		cfg  *Config
+	}{
+		{"nil config", nil},
+		{"removed ALM", &Config{DexID: DexType}},
+		{"changed dex", &Config{DexID: "detached", ALMs: valid.ALMs}},
+		{"changed chain", &Config{DexID: DexType, ChainID: 1, ALMs: valid.ALMs}},
+		{"changed adapter", &Config{DexID: DexType, ALMs: []ALMConfig{{
+			Address: testALM, Adapter: "0x0000000000000000000000000000000000000003",
+		}}}},
+		{"changed gas", &Config{DexID: DexType, ALMs: []ALMConfig{{
+			Address: testALM, GasStableIn: 1,
+		}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewPoolTracker(tc.cfg, client).GetNewPoolStateAtBlock(
+				context.Background(), p, big.NewInt(1))
+			require.ErrorIs(t, err, ErrInvalidProfile,
+				"profile drift must fail before the deliberately unreachable RPC endpoint")
+		})
+	}
+}
+
 // An empty allocated override set is not an alternate state. This exercises the public
 // path against the live fixture because the regression lived in the handoff to the raw
 // implementation/rv/code probes: when the empty map was passed through as non-nil, the

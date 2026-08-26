@@ -195,8 +195,11 @@ func liveClient() (*ethrpc.Client, *Config) {
 func trackAt(t *testing.T, ctx context.Context, client *ethrpc.Client, p entity.Pool,
 	se *StaticExtra, block *big.Int) *PoolSimulator {
 	t.Helper()
-	_ = se
-	built, err := NewPoolTracker(nil, client).GetNewPoolStateAtBlock(ctx, p, block)
+	cfg := &Config{DexID: se.DexID, ChainID: se.ChainID, ALMs: []ALMConfig{{
+		Address: se.ALM, Adapter: se.Adapter,
+		GasStableIn: se.GasStableIn, GasVolatileIn: se.GasVolatileIn,
+	}}}
+	built, err := NewPoolTracker(cfg, client).GetNewPoolStateAtBlock(ctx, p, block)
 	require.NoError(t, err)
 	sim, err := NewPoolSimulator(built)
 	require.NoError(t, err)

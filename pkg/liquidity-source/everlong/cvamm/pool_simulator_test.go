@@ -37,6 +37,8 @@ func testStaticExtra(t *testing.T) string {
 	var err error
 	se.ConfigHash, err = staticConfigHash(&se)
 	require.NoError(t, err)
+	se.ProfileHash, err = staticProfileHash(&se)
+	require.NoError(t, err)
 	b, err := json.Marshal(se)
 	require.NoError(t, err)
 	return string(b)
@@ -69,6 +71,7 @@ func poolEntityFromFixture(t *testing.T, c fixtureCase, reserves entity.PoolRese
 		Reserves:    reserves,
 		StaticExtra: testStaticExtra(t),
 		Extra:       string(extraBytes),
+		BlockNumber: 1,
 	}
 }
 
@@ -77,6 +80,14 @@ func simFromFixture(t *testing.T, c fixtureCase, reserves entity.PoolReserves) *
 	sim, err := NewPoolSimulator(poolEntityFromFixture(t, c, reserves))
 	require.NoError(t, err)
 	return sim
+}
+
+func TestZeroSnapshotBlockFailsProfile(t *testing.T) {
+	sIn, _ := fillableCases(t)
+	p := poolEntityFromFixture(t, sIn[0], nil)
+	p.BlockNumber = 0
+	_, err := NewPoolSimulator(p)
+	require.ErrorIs(t, err, ErrInvalidProfile)
 }
 
 // fillableCases picks fixture cases that actually fill (used > 0, gross > 0), keyed by
@@ -308,6 +319,7 @@ func TestMissingSampledFeeFailsClosed(t *testing.T) {
 		Tokens:   []*entity.PoolToken{{Address: testStable}, {Address: testVol}},
 		Reserves: entity.PoolReserves{hugeReserve, hugeReserve}, Extra: string(extraBytes),
 		StaticExtra: testStaticExtra(t),
+		BlockNumber: 1,
 	})
 	require.NoError(t, err)
 	_, err = calc(sim, c)

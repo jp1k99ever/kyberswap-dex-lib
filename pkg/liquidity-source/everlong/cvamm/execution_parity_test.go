@@ -81,6 +81,8 @@ func (f *venueFixture) newSimulator(t *testing.T) *PoolSimulator {
 			}
 			se.ConfigHash, err = staticConfigHash(&se)
 			require.NoError(t, err)
+			se.ProfileHash, err = staticProfileHash(&se)
+			require.NoError(t, err)
 			b, marshalErr := json.Marshal(se)
 			require.NoError(t, marshalErr)
 			return string(b)

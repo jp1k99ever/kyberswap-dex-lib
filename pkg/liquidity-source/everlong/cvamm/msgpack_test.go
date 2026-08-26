@@ -50,6 +50,7 @@ func TestMsgpackRoundTrip(t *testing.T) {
 	assert.Equal(t, sim.Extra.Support.AWad.Dec(), decoded.Extra.Support.AWad.Dec())
 	assert.Equal(t, sim.Extra.FeeStableInWad.Dec(), decoded.Extra.FeeStableInWad.Dec())
 	assert.Equal(t, sim.StaticExtra.ConfigHash, decoded.StaticExtra.ConfigHash)
+	assert.Equal(t, sim.StaticExtra.ProfileHash, decoded.StaticExtra.ProfileHash)
 
 	// And the round-tripped simulator must still quote identically.
 	want, err := calc(sim, c)
@@ -70,6 +71,15 @@ func TestMsgpackRoundTrip(t *testing.T) {
 	// Concrete msgpack decoding bypasses NewPoolSimulator. Every quote must therefore
 	// re-attest the persisted profile instead of trusting constructor-time validation.
 	decoded.StaticExtra.ProfileVersion = 0
+	_, err = calc(&decoded, c)
+	require.ErrorIs(t, err, ErrInvalidProfile)
+
+	// Mutating both copies of a token identity used to survive the equality check: the
+	// config-only digest did not bind the on-chain pair. The full persisted profile must
+	// reject that msgpack/cache cross-wire before it can advertise a fake pair.
+	decoded = *simFromFixture(t, c, nil)
+	decoded.StaticExtra.Token0 = "0x0000000000000000000000000000000000000003"
+	decoded.Info.Tokens[0] = decoded.StaticExtra.Token0
 	_, err = calc(&decoded, c)
 	require.ErrorIs(t, err, ErrInvalidProfile)
 }

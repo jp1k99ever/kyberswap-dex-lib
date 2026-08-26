@@ -556,7 +556,8 @@ func (p *PoolSimulator) profileValid() bool {
 	if p == nil {
 		return false
 	}
-	return validStaticProfile(&p.StaticExtra, p.Info.Address, p.Info.Exchange, p.Info.Type, p.Info.Tokens)
+	return validStaticProfile(&p.StaticExtra, p.Info.Address, p.Info.Exchange, p.Info.Type,
+		p.Info.BlockNumber, p.Info.Tokens)
 }
 
 // InvalidateLiquidityState permanently fails this clone closed after a transition that
