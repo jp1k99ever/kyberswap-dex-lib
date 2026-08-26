@@ -79,7 +79,8 @@ func NewPoolSimulatorWithBases(p entity.Pool, basePoolMap map[string]pool.IPoolS
 		return nil, ErrMissingBasePool
 	}
 	exactBase, ok := base.(exactLiquidityBase)
-	if !ok || !strings.EqualFold(base.GetAddress(), sim.StaticExtra.UnderlyingCvamm) ||
+	if !ok || sim.Info.BlockNumber == 0 ||
+		!strings.EqualFold(base.GetAddress(), sim.StaticExtra.UnderlyingCvamm) ||
 		!exactBase.IsLiquidityStateExact() ||
 		exactBase.SnapshotBlockNumber() != sim.Info.BlockNumber {
 		return nil, ErrInexactBasePool
@@ -174,7 +175,7 @@ func (s *PoolSimulator) SetBasePool(base pool.IPoolSimulator) {
 		s.couplingExact = false
 		return
 	}
-	if exactBase.SnapshotBlockNumber() != s.Info.BlockNumber {
+	if s.Info.BlockNumber == 0 || exactBase.SnapshotBlockNumber() != s.Info.BlockNumber {
 		s.couplingExact = false
 		return
 	}

@@ -117,9 +117,10 @@ func newTestPoolEntity(t *testing.T) entity.Pool {
 	require.NoError(t, err)
 
 	return entity.Pool{
-		Address:  "0x27775ec38e2b394738b73c0d25f63e20063df054",
-		Exchange: "everlong-rebalancer",
-		Type:     DexType,
+		Address:     "0x27775ec38e2b394738b73c0d25f63e20063df054",
+		Exchange:    "everlong-rebalancer",
+		Type:        DexType,
+		BlockNumber: 1,
 		Tokens: []*entity.PoolToken{
 			{Address: testNECT, Decimals: 18, Swappable: true},
 			{Address: testWBTC, Decimals: 8, Swappable: true},
@@ -157,6 +158,7 @@ func newTestPoolSimulator(t *testing.T) *PoolSimulator {
 		Reserves:    entity.PoolReserves{"275607106040001229469", "422007"},
 		Extra:       string(baseExtra),
 		StaticExtra: "{}",
+		BlockNumber: p.BlockNumber,
 	})
 	require.NoError(t, err)
 

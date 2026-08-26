@@ -155,6 +155,20 @@ func TestCoupledFactoryRejectsCrossBlockBase(t *testing.T) {
 		"matching summaries from different blocks must not attest hidden CVAMM state")
 }
 
+func TestCoupledFactoryRejectsUnpinnedBlock(t *testing.T) {
+	p := newTestPoolEntity(t)
+	existing := newTestPoolSimulator(t)
+	base := existing.basePool.CloneState().(*everlongcvamm.PoolSimulator)
+	p.BlockNumber, base.Info.BlockNumber = 0, 0
+
+	var se StaticExtra
+	require.NoError(t, json.Unmarshal([]byte(p.StaticExtra), &se))
+	_, err := NewPoolSimulatorWithBases(p,
+		map[string]pool.IPoolSimulator{se.UnderlyingCvamm: base})
+	require.ErrorIs(t, err, ErrInexactBasePool,
+		"two unknown block numbers are not a same-block attestation")
+}
+
 func TestReverseCouplingRequiresExactTransitionShape(t *testing.T) {
 	t.Run("deposit then sell-back", func(t *testing.T) {
 		sim, base := exactCouplingHarness(t)
