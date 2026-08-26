@@ -28,14 +28,14 @@ import (
 // in BOTH orders — and validates the coupled simulators' SECOND quote against the
 // actual settled execution:
 //
-//	order A: CVAMM swap, then a rebalancer leverage fill quoted on the folded state;
+//	order A: CVAMM swap, then a rebalancer deleverage fill quoted on the folded state
+//	         (leverage deliberately fails closed until the external reference gate is
+//	         re-attested by a refresh after a price-moving base swap);
 //	order B: rebalancer leverage fill, then a CVAMM swap quoted on the pushed base.
 //
 // The trading wallet is impersonated (it holds balances and approvals on both venues),
-// the first fill is asserted wei-exact as a sanity anchor, and the second — the coupled
-// quote — must land within a tight bps bound of the settled amount (the only residual
-// is the documented preview-vs-reseed idle wedge on the reverse push; the forward fold
-// is exact including the fee-to-idle rvps shift).
+// and both the first fill and coupled second fill must settle wei-exactly. No tolerance
+// is accepted: a transition that cannot be replayed exactly is not quotable.
 func TestBidirectionalSequentialFork(t *testing.T) {
 	test.SkipCI(t)
 	if _, err := exec.LookPath("anvil"); err != nil {
@@ -95,6 +95,7 @@ func TestBidirectionalSequentialFork(t *testing.T) {
 
 			cvammIn := new(big.Int).Mul(big.NewInt(15), big.NewInt(1e18)) // 15 NECT stable-in
 			levWBTC := big.NewInt(12_000)                                 // 12k sats leverage principal
+			dlvNECT := new(big.Int).Mul(big.NewInt(20), big.NewInt(1e18)) // 20 NECT deleverage budget
 
 			// venue call builders (same shapes the live bot settles with)
 			cvammSwap := func(amountIn *big.Int) []byte {
@@ -106,6 +107,10 @@ func TestBidirectionalSequentialFork(t *testing.T) {
 				// cap = the runtime amountIn
 				return packUints("0x9b662ebc", si.CollVaultShares,
 					si.FlashStableCap, maxVolatileIn, big.NewInt(0), walletAddr.Big())
+			}
+			deleverage := func(si SwapInfo, maxNetStableIn *big.Int) []byte {
+				return packUints("0x5cfcefff", si.GrossStableIn,
+					maxNetStableIn, big.NewInt(0), walletAddr.Big())
 			}
 
 			runCvamm := func() (*big.Int, *big.Int) { // (simOut, actualOut)
@@ -129,11 +134,21 @@ func TestBidirectionalSequentialFork(t *testing.T) {
 				coupled.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: q.SwapInfo})
 				return q.TokenAmountOut.Amount, actual
 			}
+			runDeleverage := func() (*big.Int, *big.Int) {
+				q, err := coupled.CalcAmountOut(pool.CalcAmountOutParams{
+					TokenAmountIn: pool.TokenAmount{Token: stable, Amount: dlvNECT}, TokenOut: volatile})
+				require.NoError(t, err)
+				si := q.SwapInfo.(SwapInfo)
+				rcpt := execTx(t, rc, geth, wallet, swapperAddr, deleverage(si, dlvNECT))
+				actual := transferTo(t, rcpt.Logs, common.HexToAddress(volatile), walletAddr)
+				coupled.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: q.SwapInfo})
+				return q.TokenAmountOut.Amount, actual
+			}
 
 			var firstSim, firstActual, secondSim, secondActual *big.Int
 			if order == "cvamm-then-rebalancer" {
 				firstSim, firstActual = runCvamm()
-				secondSim, secondActual = runLeverage()
+				secondSim, secondActual = runDeleverage()
 			} else {
 				firstSim, firstActual = runLeverage()
 				secondSim, secondActual = runCvamm()
@@ -141,19 +156,11 @@ func TestBidirectionalSequentialFork(t *testing.T) {
 
 			require.Zero(t, firstSim.Cmp(firstActual),
 				"first fill must be wei-exact (sim %s vs settled %s)", firstSim, firstActual)
-			diff := relBps(secondSim, secondActual)
-			t.Logf("%s: first wei-exact; second (coupled) quote %s vs settled %s — %d bps", order,
-				secondSim, secondActual, diff)
-			require.LessOrEqual(t, diff, int64(3),
-				"coupled second quote drift: sim %s vs settled %s", secondSim, secondActual)
+			require.Zero(t, secondSim.Cmp(secondActual),
+				"coupled second fill must be wei-exact (sim %s vs settled %s)", secondSim, secondActual)
+			t.Logf("%s: both fills wei-exact; second quote/out %s", order, secondSim)
 		})
 	}
-}
-
-func relBps(a, b *big.Int) int64 {
-	d := new(big.Int).Abs(new(big.Int).Sub(a, b))
-	d.Mul(d, big.NewInt(10_000))
-	return new(big.Int).Div(d, b).Int64()
 }
 
 func packUints(selector string, args ...*big.Int) []byte {

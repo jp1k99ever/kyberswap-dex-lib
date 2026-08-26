@@ -21,11 +21,10 @@ import (
 // encoded into the adapter's `data` exactly as the executor would from PoolMeta/SwapInfo,
 // filled through the deployed EverlongRebalancerAdapter (EverlongCvammAdapter for the
 // base hop) on one anvil fork, and must return the quoted amounts wei-exact. A second
-// pair of simulators is advanced only by UpdateBalance across the whole sequence and must
-// stay within 1 bps of every fill: the venue re-marks its reservation value and the CDP
-// price feed lazily on interaction (ppb-scale), which no snapshot can carry forward
-// exactly, while the shared-book coupling it proves is what the router actually relies on
-// between refreshes.
+// pair of simulators is advanced only by UpdateBalance across the whole sequence and
+// must remain wei-exact wherever it remains quotable. A price-moving base swap makes
+// leverage fail closed until a fresh snapshot re-attests the wrapper's external
+// reference-oracle gate; no numeric tolerance substitutes for that missing fact.
 func TestAdapterParity(t *testing.T) {
 	test.SkipCI(t)
 	ctx := context.Background()
@@ -46,7 +45,8 @@ func TestAdapterParity(t *testing.T) {
 	track := func() (*PoolSimulator, *everlongcvamm.PoolSimulator) {
 		tracked, err := NewPoolTracker(cfg, client).GetNewPoolState(ctx, pools[0], pool.GetNewPoolStateParams{})
 		require.NoError(t, err)
-		cvammTracked, err := everlongcvamm.NewPoolTracker(cvammCfg, client).GetNewPoolState(ctx, cvammPools[0], pool.GetNewPoolStateParams{})
+		cvammTracked, err := everlongcvamm.NewPoolTracker(cvammCfg, client).GetNewPoolStateAtBlock(
+			ctx, cvammPools[0], new(big.Int).SetUint64(tracked.BlockNumber))
 		require.NoError(t, err)
 		base, err := everlongcvamm.NewPoolSimulator(cvammTracked)
 		require.NoError(t, err)
@@ -108,7 +108,7 @@ func TestAdapterParity(t *testing.T) {
 		require.True(t, dust.Sign() >= 0 && dust.Cmp(maxDust) <= 0,
 			"%s: amountUnused adapter %s vs fresh quote %s", name, fill.AmountUnused, q.RemainingTokenAmountIn.Amount)
 		require.LessOrEqual(t, fill.GasUsed, uint64(q.Gas), "%s: gas used above the quoted estimate", name)
-		require.LessOrEqual(t, relBps(qAdv.TokenAmountOut.Amount, fill.AmountOut), int64(1),
+		require.Zero(t, qAdv.TokenAmountOut.Amount.Cmp(fill.AmountOut),
 			"%s: advanced (UpdateBalance-only) quote %s vs fill %s", name, qAdv.TokenAmountOut.Amount, fill.AmountOut)
 		t.Logf("%s: out %s unused %s gas %d (quoted %d); advanced sim %s", name,
 			fill.AmountOut, fill.AmountUnused, fill.GasUsed, q.Gas, qAdv.TokenAmountOut.Amount)
@@ -132,5 +132,22 @@ func TestAdapterParity(t *testing.T) {
 	rebalancerFill("leverage 10k sats", volatile, big.NewInt(10_000))
 	cvammFill("cvamm hop 15 NECT (moves the shared book)", new(big.Int).Mul(big.NewInt(15), wad))
 	rebalancerFill("deleverage 20 NECT on the folded state", stable, new(big.Int).Mul(big.NewInt(20), wad))
-	rebalancerFill("leverage 3M sats (large lot)", volatile, big.NewInt(3_000_000))
+
+	// The prior CVAMM fill changed x. Its reserves and rvps are replayed exactly, but the
+	// wrapper's leverage-only external reference neighborhood is not a local state word.
+	// The advanced simulator must refuse; a fresh same-block track re-attests it and its
+	// large leverage quote must still execute wei-exactly through the adapter.
+	large := big.NewInt(3_000_000)
+	_, staleErr := advanced.CalcAmountOut(pool.CalcAmountOutParams{
+		TokenAmountIn: pool.TokenAmount{Token: volatile, Amount: large}, TokenOut: stable})
+	require.ErrorIs(t, staleErr, ErrVenueGateClosed)
+	require.ErrorIs(t, staleErr, ErrUnattestedReference)
+
+	fresh, _ := track()
+	q := quote(fresh, volatile, stable, large)
+	adapter := f.DeployAdapter(t, "EverlongRebalancerAdapter")
+	fill := f.Execute(t, adapter, "executeEverlongRebalancer", rebalancerData(q, large), large,
+		common.HexToAddress(volatile), common.HexToAddress(stable), whale, recipient)
+	require.Zero(t, fill.AmountOut.Cmp(q.TokenAmountOut.Amount),
+		"fresh large leverage: amountOut adapter %s vs quote %s", fill.AmountOut, q.TokenAmountOut.Amount)
 }
