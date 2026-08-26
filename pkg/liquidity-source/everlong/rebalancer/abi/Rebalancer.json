@@ -1,0 +1,201 @@
+[
+ {
+  "inputs": [],
+  "name": "collVault",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "settlementSwapper",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "exchangeState",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "collateral",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "debt",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "priceWad",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "spreadPpm",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "positionManager",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "managedVault",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "PHYSICAL_CR_FLOOR_WAD",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "floorWad",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "leverageCurve",
+  "outputs": [
+   {
+    "components": [
+     {
+      "internalType": "uint256",
+      "name": "hJoin",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "hWall",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "width",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "dJoin",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "dWall",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "p0",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "p1",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "p2",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "p3",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "q1",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "q2",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "q3",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "q4",
+      "type": "uint256"
+     }
+    ],
+    "internalType": "struct LevCurve",
+    "name": "curve",
+    "type": "tuple"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "levFeeHook",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "mathLibrary",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "pure",
+  "type": "function"
+ }
+]
