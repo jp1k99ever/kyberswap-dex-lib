@@ -246,19 +246,13 @@ func TestMetaAndApproval(t *testing.T) {
 	require.Equal(t, testALM, sim.GetApprovalAddress(testStable, testVol))
 }
 
-// TestReversalFallsBackWhenFeeLawUntracked: without the hook terms the post-fill fee is
-// unknowable, so a revisit takes the worse sampled fee — understating, never overstating.
-func TestReversalFallsBackWhenFeeLawUntracked(t *testing.T) {
+// TestReversalFailsClosedWhenFeeLawUntracked: the sampled fee is exact for the first
+// fill, but a dynamic venue without the exact post-fill inputs cannot be revisited.
+func TestReversalFailsClosedWhenFeeLawUntracked(t *testing.T) {
 	stableIn, _ := fillableCases(t)
 	require.NotEmpty(t, stableIn)
 	sim := simFromFixture(t, stableIn[0], nil)
-
-	worseBefore := sim.Extra.FeeStableInWad
-	if sim.Extra.FeeVolatileInWad.Gt(worseBefore) {
-		worseBefore = sim.Extra.FeeVolatileInWad
-	}
-	require.False(t, sim.Extra.FeeStableInWad.Eq(sim.Extra.FeeVolatileInWad),
-		"the fixture must have a directional spread for this to mean anything")
+	sim.Extra.FeeHookActive = true
 
 	res, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
 		TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: stableIn[0].amountIn.ToBig()},
@@ -266,194 +260,63 @@ func TestReversalFallsBackWhenFeeLawUntracked(t *testing.T) {
 	})
 	require.NoError(t, err)
 	sim.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: res.SwapInfo})
-
-	require.True(t, sim.Extra.FeeStableInWad.Eq(worseBefore), "both legs take the worse fee")
-	require.True(t, sim.Extra.FeeVolatileInWad.Eq(worseBefore), "including the reversal leg")
+	_, err = sim.CalcAmountOut(pool.CalcAmountOutParams{
+		TokenAmountIn: pool.TokenAmount{Token: testVol, Amount: big.NewInt(1e8)},
+		TokenOut:      testStable,
+	})
+	require.ErrorIs(t, err, ErrInexactFeeState)
 }
 
-// TestReversalRederivedInSaturatedRegime: with the hook terms tracked and the sample
-// reproduced by MidFee * multiplier, the post-fill fees are re-derived per direction
-// instead of both collapsing to the worse one — which is the whole directional spread.
-func TestReversalRederivedInSaturatedRegime(t *testing.T) {
-	stableInCases, _ := fillableCases(t)
-	require.NotEmpty(t, stableInCases)
-	sim := simFromFixture(t, stableInCases[0], nil)
-
-	e := &sim.Extra
-	e.ReservationPriceWad = uint256.NewInt(1e18)
-	e.MidFeeWad = uint256.NewInt(30_000_000_000_000_000)   // 3%
-	e.DirSkewWad = uint256.NewInt(150_000_000_000_000_000) // 0.15
-	e.InvSkewKappaWad = uint256.NewInt(2_000_000_000_000_000_000)
-	e.InvSkewBandWad = uint256.NewInt(60_000_000_000_000_000)
-	e.CurvatureWad = uint256.NewInt(50_000_000_000_000_000)
-	e.LpFeeWad = uint256.NewInt(30_000_000_000_000_000)
-	require.True(t, e.feeLawTracked())
-
-	// Seed the sample from the law itself so the parity guard admits the re-derivation.
-	x, rs, rv := e.XWad.ToBig(), sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig()
-	fs, fv := feeUpperBoundWad(e, x, rs, rv, true), feeUpperBoundWad(e, x, rs, rv, false)
-	require.NotNil(t, fs)
-	require.NotEqual(t, fs.String(), fv.String(), "the directions must differ pre-fill")
-	e.FeeStableInWad, _ = uint256.FromBig(fs)
-	e.FeeVolatileInWad, _ = uint256.FromBig(fv)
-
-	res, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
-		TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: stableInCases[0].amountIn.ToBig()},
-		TokenOut:      testVol,
+// TestMissingSampledFeeFailsClosed protects legacy/malformed Extra payloads. The first
+// quote is allowed to use only fees directly sampled from poolFeeDirectional; a missing
+// word must not be interpreted as a zero haircut.
+func TestMissingSampledFeeFailsClosed(t *testing.T) {
+	stableIn, _ := fillableCases(t)
+	c := stableIn[0]
+	extraBytes, err := json.Marshal(Extra{
+		Support: c.sup, XWad: c.x, AnchorSqrtX96: c.anchor, Kappa: c.kappa,
+		FeeVolatileInWad: uint256.NewInt(testFeeVIn),
 	})
 	require.NoError(t, err)
-	sim.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: res.SwapInfo})
-
-	require.False(t, e.FeeStableInWad.Eq(e.FeeVolatileInWad),
-		"the legs must stay distinct — collapsing them is the 90 bps the fold cost")
-	wantS := feeUpperBoundWad(e, e.XWad.ToBig(), sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig(), true)
-	wantV := feeUpperBoundWad(e, e.XWad.ToBig(), sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig(), false)
-	require.Zero(t, e.FeeStableInWad.ToBig().Cmp(wantS))
-	require.Zero(t, e.FeeVolatileInWad.ToBig().Cmp(wantV))
-}
-
-// TestReversalRespectsHookFloor: the hook floor is applied last on-chain and can exceed
-// the multiplier term, so the bound has to carry it. A floor above anything the law can
-// produce must raise BOTH legs to the floor rather than price under it.
-func TestReversalRespectsHookFloor(t *testing.T) {
-	stableInCases, _ := fillableCases(t)
-	require.NotEmpty(t, stableInCases)
-	sim := simFromFixture(t, stableInCases[0], nil)
-
-	e := &sim.Extra
-	e.ReservationPriceWad = uint256.NewInt(1e18)
-	e.MidFeeWad = uint256.NewInt(30_000_000_000_000_000)
-	e.DirSkewWad = uint256.NewInt(150_000_000_000_000_000)
-	e.InvSkewKappaWad = uint256.NewInt(2_000_000_000_000_000_000)
-	e.InvSkewBandWad = uint256.NewInt(60_000_000_000_000_000)
-	e.CurvatureWad = uint256.NewInt(50_000_000_000_000_000)
-	e.LpFeeWad = uint256.NewInt(30_000_000_000_000_000)
-
-	x, rs, rv := e.XWad.ToBig(), sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig()
-	fs, fv := feeUpperBoundWad(e, x, rs, rv, true), feeUpperBoundWad(e, x, rs, rv, false)
-	e.FeeStableInWad, _ = uint256.FromBig(fs)
-	e.FeeVolatileInWad, _ = uint256.FromBig(fv)
-	// A floor above anything the law can produce forces the decline.
-	e.FloorStableInWad = uint256.NewInt(900_000_000_000_000_000)
-	e.FloorVolatileInWad = uint256.NewInt(900_000_000_000_000_000)
-
-	res, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
-		TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: stableInCases[0].amountIn.ToBig()},
-		TokenOut:      testVol,
+	sim, err := NewPoolSimulator(entity.Pool{
+		Address: testALM, Exchange: DexType, Type: DexType,
+		Tokens:   []*entity.PoolToken{{Address: testStable}, {Address: testVol}},
+		Reserves: entity.PoolReserves{hugeReserve, hugeReserve}, Extra: string(extraBytes),
+		StaticExtra: "{}",
 	})
 	require.NoError(t, err)
-	sim.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: res.SwapInfo})
-
-	require.True(t, e.FeeStableInWad.Eq(uint256.NewInt(900_000_000_000_000_000)),
-		"a dominating floor must raise the leg to it, never price under it")
-	require.True(t, e.FeeVolatileInWad.Eq(uint256.NewInt(900_000_000_000_000_000)))
+	_, err = calc(sim, c)
+	require.ErrorIs(t, err, ErrInexactFeeState)
 }
 
-// TestApplyLiquidityDeltaAtBoundaries exercises the coupling FALLBACK (a snapshot with
-// no idle words, where one scalar is all that can be known) where it is
-// most likely to misbehave: a burn that nearly empties the book, a burn past the whole
-// supply, and a mint that multiplies it. The scalar must keep the curve's shape (x,
-// anchor, support untouched), never produce a negative or overflowing book, and leave the
-// sim quoting within its own reserves.
+// TestApplyLiquidityDeltaAtBoundaries refuses every transition when the snapshot omitted
+// idle. A proportional reserve scale is not the venue's two-bucket transition.
 func TestApplyLiquidityDeltaAtBoundaries(t *testing.T) {
 	stableInCases, _ := fillableCases(t)
 	require.NotEmpty(t, stableInCases)
-
+	sim := simFromFixture(t, stableInCases[0], nil)
 	supply := big.NewInt(1_000_000)
-	for _, c := range []struct {
-		name    string
-		delta   *big.Int
-		refused bool // a supply that would go negative must be refused outright
-	}{
-		{"burn all but one share", new(big.Int).Neg(big.NewInt(999_999)), false},
-		{"burn the entire supply", new(big.Int).Neg(new(big.Int).Set(supply)), false},
-		{"burn past the supply", new(big.Int).Neg(big.NewInt(1_000_001)), true},
-		{"mint 1000x the book", new(big.Int).Mul(supply, big.NewInt(1000)), false},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			sim := simFromFixture(t, stableInCases[0], nil)
-			x0 := sim.Extra.XWad.Clone()
-			anchor0 := sim.Extra.AnchorSqrtX96.Clone()
-			support0 := sim.Extra.Support
-
-			rs0, rv0, k0 := sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig(), sim.Extra.Kappa.ToBig()
-
-			dS, dV, _, _ := sim.ApplyLiquidityDelta(c.delta, supply, nil, nil)
-			if c.refused {
-				require.Nil(t, dS, "a supply that would go negative must be refused")
-				require.True(t, sim.reserveStable.Eq(uint256.MustFromBig(rs0)), "a refusal must not mutate")
-				return
-			}
-			require.NotNil(t, dS)
-			require.NotNil(t, dV)
-
-			// The property the scalar actually claims: reserves and kappa all scale by
-			// supplyAfter/supplyBefore, so the curve keeps its shape.
-			after := new(big.Int).Add(supply, c.delta)
-			for _, leg := range []struct {
-				name     string
-				was, now *big.Int
-			}{
-				{"reserveStable", rs0, sim.reserveStable.ToBig()},
-				{"reserveVolatile", rv0, sim.reserveVolatile.ToBig()},
-				{"kappa", k0, sim.Extra.Kappa.ToBig()},
-			} {
-				want := new(big.Int).Quo(new(big.Int).Mul(leg.was, after), supply)
-				require.Zero(t, leg.now.Cmp(want),
-					"%s must scale pro rata: got %s want %s", leg.name, leg.now, want)
-			}
-
-			require.True(t, sim.Extra.XWad.Eq(x0), "x must not move")
-			require.True(t, sim.Extra.AnchorSqrtX96.Eq(anchor0), "anchor must not move")
-			require.Equal(t, support0, sim.Extra.Support, "support must not move")
-			require.False(t, sim.reserveStable.Lt(uint256.NewInt(0)))
-			require.GreaterOrEqual(t, sim.Info.Reserves[0].Sign(), 0)
-			require.GreaterOrEqual(t, sim.Info.Reserves[1].Sign(), 0)
-
-			// A quote on the rescaled book must stay inside it, or fail cleanly.
-			res, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
-				TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: big.NewInt(1e18)},
-				TokenOut:      testVol,
-			})
-			if err != nil {
-				return
-			}
-			require.LessOrEqual(t, res.TokenAmountOut.Amount.Cmp(sim.reserveVolatile.ToBig()), 0,
-				"a quote must never promise more than the rescaled book holds")
-		})
-	}
+	rs0, rv0 := sim.reserveStable.Clone(), sim.reserveVolatile.Clone()
+	dS, dV, _, _ := sim.ApplyLiquidityDelta(big.NewInt(100), supply, big.NewInt(100), big.NewInt(100))
+	require.Nil(t, dS)
+	require.Nil(t, dV)
+	require.True(t, sim.reserveStable.Eq(rs0), "a refusal must not mutate")
+	require.True(t, sim.reserveVolatile.Eq(rv0))
+	_, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
+		TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: big.NewInt(1e18)}, TokenOut: testVol})
+	require.ErrorIs(t, err, ErrInexactLiquidityState)
 }
 
 // TestFeeNeverExceedsWad: on-chain a hook floor above WAD is DISCARDED (the law returns
 // the base fee), and a fee at or above WAD would underflow `gross - fee` into a wrapped
-// quote. Both the bound and the swap path must refuse to go there.
+// quote. The sampled swap path must refuse to go there.
 func TestFeeNeverExceedsWad(t *testing.T) {
 	stableInCases, _ := fillableCases(t)
 	require.NotEmpty(t, stableInCases)
 	sim := simFromFixture(t, stableInCases[0], nil)
 
-	e := &sim.Extra
-	e.ReservationPriceWad = uint256.NewInt(1e18)
-	e.MidFeeWad = uint256.NewInt(30_000_000_000_000_000)
-	e.DirSkewWad = uint256.NewInt(150_000_000_000_000_000)
-	e.InvSkewKappaWad = uint256.NewInt(2_000_000_000_000_000_000)
-	e.InvSkewBandWad = uint256.NewInt(60_000_000_000_000_000)
-	e.CurvatureWad = uint256.NewInt(50_000_000_000_000_000)
-	e.LpFeeWad = uint256.NewInt(30_000_000_000_000_000)
-	// A hook whose saturated floor probe exceeds WAD.
-	huge := uint256.MustFromDecimal("5000000000000000000")
-	e.FloorStableInWad, e.FloorVolatileInWad = huge, huge
-
-	for _, stableIn := range []bool{true, false} {
-		b := feeUpperBoundWad(e, e.XWad.ToBig(), sim.reserveStable.ToBig(),
-			sim.reserveVolatile.ToBig(), stableIn)
-		require.NotNil(t, b)
-		require.LessOrEqual(t, b.Cmp(bigWadFee), 0,
-			"stableIn=%v: bound %s exceeds WAD", stableIn, b)
-	}
-
 	// And the swap path refuses a fee at or above WAD rather than wrapping the subtraction.
-	e.FeeStableInWad = uint256.MustFromDecimal("2000000000000000000")
+	sim.Extra.FeeStableInWad = uint256.MustFromDecimal("2000000000000000000")
 	_, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
 		TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: big.NewInt(1e18)},
 		TokenOut:      testVol,
@@ -478,6 +341,7 @@ func TestApplyLiquidityDeltaReplaysTheVenue(t *testing.T) {
 	sim.Extra.IdleStable = uint256.MustFromBig(idle0)
 	sim.Extra.IdleVolatile = uint256.MustFromBig(idle1)
 	sim.idleAccStable, sim.idleAccVolatile = uint256.MustFromBig(idle0), uint256.MustFromBig(idle1)
+	sim.liquidityStateExact = true
 	res0, res1 := sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig()
 	kappa0 := sim.Extra.Kappa.ToBig()
 
@@ -508,56 +372,24 @@ func TestApplyLiquidityDeltaReplaysTheVenue(t *testing.T) {
 	require.LessOrEqual(t, sim.Extra.Kappa.ToBig().Cmp(kappa0), 0)
 }
 
-// TestApplyLiquidityDeltaReArmsARetractedBook: a deposit into a book with kappa == 0
-// re-arms it on-chain (CvammALM._solveReseed -> CvammCurve.reseed) rather than scaling a
-// zero scale. Scaling would leave the coupled base pool permanently retracted while the
-// venue quotes again, so the reseed is replayed here: the coordinate and scale come back
-// non-zero, what the curve cannot express becomes idle rather than vanishing, and the
-// book prices again.
-func TestApplyLiquidityDeltaReArmsARetractedBook(t *testing.T) {
+// TestApplyLiquidityDeltaRejectsRetractedBook: zero-kappa reseeding is outside the
+// reverse-coupling change. Keep it fail-closed instead of silently expanding scope.
+func TestApplyLiquidityDeltaRejectsRetractedBook(t *testing.T) {
 	stableInCases, _ := fillableCases(t)
 	require.NotEmpty(t, stableInCases)
 	sim := simFromFixture(t, stableInCases[0], nil)
-
-	// retract the book, keeping the reserves the deposit will re-arm from
 	sim.Extra.Kappa = new(uint256.Int)
 	sim.Extra.IdleStable, sim.Extra.IdleVolatile = new(uint256.Int), new(uint256.Int)
 	sim.idleAccStable, sim.idleAccVolatile = new(uint256.Int), new(uint256.Int)
-	res0, res1 := sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig()
-	total0 := new(big.Int).Set(res0)
-	total1 := new(big.Int).Set(res1)
-
+	// Force the capability latch true to prove the transition itself checks kappa; a
+	// stale/foreign caller cannot bypass the zero-book refusal by toggling metadata.
+	sim.liquidityStateExact = true
+	dS, _, _, _ := sim.ApplyLiquidityDelta(big.NewInt(100), big.NewInt(1_000), big.NewInt(100), big.NewInt(100))
+	require.Nil(t, dS)
+	_, ok := sim.ReservationValuePerShareWad(big.NewInt(1), big.NewInt(1_000))
+	require.False(t, ok, "the wrapper mark must not claim exactness at zero kappa")
 	_, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
 		TokenAmountIn: pool.TokenAmount{Token: sim.Info.Tokens[0], Amount: big.NewInt(1e15)},
 		TokenOut:      sim.Info.Tokens[1]})
-	require.ErrorIs(t, err, ErrRetractedBook, "a retracted book must not quote")
-
-	supply := big.NewInt(1_000_000)
-	shares := big.NewInt(100_000)
-	used0 := new(big.Int).Div(new(big.Int).Mul(total0, shares), supply)
-	used1 := new(big.Int).Div(new(big.Int).Mul(total1, shares), supply)
-
-	dTotS, dTotV, dAccS, dAccV := sim.ApplyLiquidityDelta(shares, supply, used0, used1)
-	require.NotNil(t, dTotS, "the deposit must re-arm rather than refuse")
-	require.Positive(t, sim.Extra.Kappa.Sign(), "kappa must come back non-zero")
-	require.Positive(t, sim.Extra.XWad.Sign())
-
-	// Totals move by the whole deposit; the reserve legs move by less, and the shortfall
-	// is exactly what the reseed parked in idle.
-	require.Zero(t, dTotS.Cmp(used0))
-	require.Zero(t, dTotV.Cmp(used1))
-	parkedS := new(big.Int).Sub(dTotS, dAccS)
-	parkedV := new(big.Int).Sub(dTotV, dAccV)
-	require.GreaterOrEqual(t, parkedS.Sign(), 0)
-	require.GreaterOrEqual(t, parkedV.Sign(), 0)
-	require.Zero(t, sim.idleAccStable.ToBig().Cmp(parkedS), "the unexpressible stable becomes idle")
-	require.Zero(t, sim.idleAccVolatile.ToBig().Cmp(parkedV), "the unexpressible volatile becomes idle")
-	// nothing is conjured or lost: reserves + idle == the pre-deposit book + the deposit
-	gotTotal0 := new(big.Int).Add(sim.reserveStable.ToBig(), sim.idleAccStable.ToBig())
-	require.Zero(t, gotTotal0.Cmp(new(big.Int).Add(res0, used0)), "stable totals must be conserved")
-
-	_, err = sim.CalcAmountOut(pool.CalcAmountOutParams{
-		TokenAmountIn: pool.TokenAmount{Token: sim.Info.Tokens[0], Amount: big.NewInt(1e15)},
-		TokenOut:      sim.Info.Tokens[1]})
-	require.NotErrorIs(t, err, ErrRetractedBook, "the re-armed book must price again")
+	require.ErrorIs(t, err, ErrInexactLiquidityState)
 }

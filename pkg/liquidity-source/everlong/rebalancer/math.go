@@ -53,8 +53,20 @@ type CurveParams struct {
 	PhysicalCrFloorWad *big.Int    `json:"crFloor"`        // PRE-fill floor capping the max leverage lot
 }
 
+type postLiquidityState struct {
+	RvpsWad       *big.Int
+	StableTotal   *big.Int
+	VolatileTotal *big.Int
+	TotalSupply   *big.Int
+}
+
 // VaultState is the per-refresh rebalancer + vault snapshot (all read from chain).
 type VaultState struct {
+	// postLiquidity is installed only on a coupled simulator's quote copy. It replays a
+	// candidate liquidity transition on a cloned base and returns the exact wrapper mark,
+	// physical totals and supply; it is deliberately neither serialized nor persisted.
+	postLiquidity func(isLeverage bool, collVaultShares *big.Int) (*postLiquidityState, bool) `json:"-" msgpack:"-"`
+
 	// Per-refresh on-chain curve (CR floor live today, leverageCurve() when the
 	// settable-curve upgrade ships) over the frozen constants. nil = frozen only.
 	LiveCurve *CurveParams `json:"liveCurve,omitempty"`
@@ -72,8 +84,8 @@ type VaultState struct {
 	// CvammALM.idleStable()/idleVolatile(): the part of the totals the ALM keeps off
 	// the curve. Its withdraw floors the accounted and idle parts SEPARATELY, so the legs
 	// a redeem physically releases can land a wei under the swapper's combined-total
-	// preview; with these the simulator reproduces the physical legs exactly. nil falls
-	// back to the preview.
+	// preview; with these the simulator reproduces the physical legs exactly. They are
+	// required by the coupled factory.
 	AlmIdleStable    *big.Int `json:"idleS,omitempty"`
 	AlmIdleVolatile  *big.Int `json:"idleV,omitempty"`
 	AlmSupply        *big.Int `json:"as"`  // alm.totalSupply()
@@ -786,13 +798,27 @@ func reservationValueAt(collVaultShares, cvTotalAssets, cvTotalSupply *big.Int,
 	return mulDiv(value, bigWad, collVaultShares)
 }
 
-// postReservation is the reservation value the venue would report after the fill, or the
-// pre-fill value when rvps is not tracked (legacy persisted states).
-func (s *VaultState) postReservation(newColl, postAssets, postSupply *big.Int) *big.Int {
+// postReservation is the reservation value the venue reports after the underlying ALM
+// liquidity move and the CollVault mint/burn. The coupled path reconstructs rvps from
+// the exact deposit/withdraw buckets; standalone legacy snapshots retain the old mark.
+func (s *VaultState) postReservation(isLeverage bool, shares, newColl, postAssets, postSupply *big.Int) (
+	priceWad, rvpsWad *big.Int, ok bool) {
 	if s.RvpsWad == nil || s.RvpsWad.Sign() <= 0 {
-		return s.PriceWad
+		return s.PriceWad, nil, s.postLiquidity == nil
 	}
-	return reservationValueAt(newColl, postAssets, postSupply, s.CvDecimalsOffset, s.RvpsWad)
+	rvps := s.RvpsWad
+	if s.postLiquidity != nil {
+		var exact bool
+		post, exact := s.postLiquidity(isLeverage, shares)
+		if !exact || post == nil {
+			return nil, nil, false
+		}
+		rvps = post.RvpsWad
+		if rvps == nil || rvps.Sign() <= 0 {
+			return nil, nil, false
+		}
+	}
+	return reservationValueAt(newColl, postAssets, postSupply, s.CvDecimalsOffset, rvps), rvps, true
 }
 
 // computeCR = PropMath._computeCR: coll*price/debt floored; nil means infinite (debt 0).
@@ -807,8 +833,8 @@ func computeCR(coll, debt, price *big.Int) *big.Int {
 // predicate applied on top of every quote (the quote-level isStateSafe re-check against
 // the PRE-fill reservation already lives in leverageQuoteChecked/deleverageQuoteChecked):
 //
-//  1. isStateSafe on the RECOMPUTED post-fill reservation value (the fill's own CollVault
-//     mint/burn shifts convertToAssets; rvps itself is invariant under the pro-rata ALM leg),
+//  1. isStateSafe on the RECOMPUTED post-fill reservation value (both the CollVault
+//     conversion and the independently-floored ALM rvps move),
 //  2. post anchor >= pre anchor and baseX != 0,
 //  3. the post-fill physical-CR floor (leverage only; modelled in leverageOk),
 //  4. the +-PRICE_BAND_NUM price band on the post internal value,
@@ -824,7 +850,10 @@ func (cp *CurveParams) fillOutcomeAccepted(s *VaultState, isLeverage bool,
 	} else {
 		postAssets, postSupply = s.postVaultDeleverage(shares)
 	}
-	resPost := s.postReservation(newColl, postAssets, postSupply)
+	resPost, _, ok := s.postReservation(isLeverage, shares, newColl, postAssets, postSupply)
+	if !ok {
+		return false
+	}
 
 	preAnchor := cp.xAnchorForState(s.Collateral, s.Debt, s.PriceWad)
 	if !cp.isStateSafe(newColl, newDebt, resPost, preAnchor) {
@@ -1150,10 +1179,9 @@ func (cp *CurveParams) deleverageLegsAt(s *VaultState, stableDebtIn *big.Int) (*
 // re-checks it after the adjustment. Two things move and both must be carried or the
 // bound comes out wrong:
 //
-//   - the ALM grows by the minted legs, and share minting is pro-rata, so its
-//     reference-marked reserves scale by the same factor its supply does. That factor
-//     cancels between the position's share of the book and the book's own total, which
-//     is why `totalPhysicalValue` and `AlmSupply` may both stay PRE-fill here.
+//   - the ALM grows by the minted legs. On a coupled quote its exact post totals and
+//     supply come from the candidate deposit+sell-back replay: the four independent
+//     bucket floors make the old pre-book scale cancellation off by wei.
 //   - the CollVault does NOT cancel: its assets grow by the minted ALM shares and its
 //     supply by the minted CollVault shares, and ERC-4626's virtual offsets make the
 //     conversion sensitive to both. Converting the post-fill collateral on the PRE-fill
@@ -1171,7 +1199,19 @@ func (cp *CurveParams) leverageOk(s *VaultState, collateralIn, totalPhysicalValu
 	post.CvTotalAssets = new(big.Int).Add(s.CvTotalAssets, almSharesMinted)
 	post.CvTotalSupply = new(big.Int).Add(s.CvTotalSupply, collateralIn)
 	almShares := post.cvConvertToAssets(newColl, false)
-	positionPhysicalValue := mulDiv(totalPhysicalValue, almShares, s.AlmSupply)
+	physicalValue, almSupply := totalPhysicalValue, s.AlmSupply
+	if s.postLiquidity != nil {
+		liquidity, ok := s.postLiquidity(true, collateralIn)
+		if !ok || liquidity == nil || liquidity.StableTotal == nil ||
+			liquidity.VolatileTotal == nil || liquidity.TotalSupply == nil ||
+			liquidity.TotalSupply.Sign() <= 0 {
+			return false
+		}
+		physicalValue = new(big.Int).Add(liquidity.StableTotal,
+			mulDiv(liquidity.VolatileTotal, s.RefRawReferenceWad, bigWad))
+		almSupply = liquidity.TotalSupply
+	}
+	positionPhysicalValue := mulDiv(physicalValue, almShares, almSupply)
 	requiredValue := mulDivUp(newDebt, cp.PhysicalCrFloorWad, bigWad)
 	return positionPhysicalValue.Cmp(requiredValue) >= 0
 }
@@ -1185,11 +1225,25 @@ func (cp *CurveParams) maxLeverageShares(s *VaultState) *big.Int {
 	totalPhysicalValue := new(big.Int).Add(s.RefStableReserve,
 		mulDiv(s.RefAssetReserve, s.RefRawReferenceWad, bigWad))
 	one := big.NewInt(1)
-	if !cp.leverageOk(s, one, totalPhysicalValue) {
-		return new(big.Int)
-	}
-	lo := new(big.Int).Set(one)
 	hi := mulDiv(bigMaxInput, bigWad, s.PriceWad)
+	lo := new(big.Int).Set(one)
+	if !cp.leverageOk(s, lo, totalPhysicalValue) {
+		if s.postLiquidity == nil {
+			return new(big.Int)
+		}
+		// Tiny CollVault-share counts can map to zero volatile base units and therefore
+		// cannot materialize an ALM deposit, while larger counts are perfectly valid.
+		// Find the first materializable scale before bisecting the upper boundary.
+		for lo.Cmp(hi) < 0 && !cp.leverageOk(s, lo, totalPhysicalValue) {
+			lo.Lsh(lo, 1)
+			if lo.Cmp(hi) > 0 {
+				lo.Set(hi)
+			}
+		}
+		if !cp.leverageOk(s, lo, totalPhysicalValue) {
+			return new(big.Int)
+		}
+	}
 	var mid, span big.Int
 	for lo.Cmp(hi) < 0 {
 		span.Sub(hi, lo)

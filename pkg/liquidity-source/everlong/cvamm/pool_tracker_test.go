@@ -13,7 +13,6 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient/gethclient"
 	"github.com/goccy/go-json"
-	"github.com/holiman/uint256"
 	"github.com/stretchr/testify/require"
 
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/entity"
@@ -246,10 +245,8 @@ func mappingKey(key common.Hash, slot *big.Int) common.Hash {
 	return crypto.Keccak256Hash(key.Bytes(), common.BigToHash(slot).Bytes())
 }
 
-// TestFeeLawParityAgainstChain checks the invariant the re-derivation actually rests on:
-// it is admitted ONLY when it reproduces poolFeeDirectional. In the saturated regime the
-// ported expression must match the chain exactly; outside it the guard must decline, so
-// the conservative fold stands rather than a formula that no longer applies.
+// TestFeeLawParityAgainstChain checks that the implementation-pinned rv storage word and
+// public hook terms reproduce both directional samples exactly.
 func TestFeeLawParityAgainstChain(t *testing.T) {
 	test.SkipCI(t)
 	ctx := context.Background()
@@ -274,34 +271,15 @@ func TestFeeLawParityAgainstChain(t *testing.T) {
 	require.NoError(t, err)
 
 	e := &sim.Extra
-	require.True(t, e.feeLawTracked(), "the hook terms must be tracked")
+	require.True(t, e.feeLawExactTracked(), "the complete exact fee state must be tracked")
 
 	x := e.XWad.ToBig()
 	rs, rv := sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig()
-	exact := true
-	for _, c := range []struct {
-		stableIn bool
-		sampled  *uint256.Int
-	}{{true, e.FeeStableInWad}, {false, e.FeeVolatileInWad}} {
-		bound := feeUpperBoundWad(e, x, rs, rv, c.stableIn)
-		require.NotNil(t, bound)
-		// The bound must hold against the chain — that is the whole safety claim.
-		require.GreaterOrEqual(t, bound.Cmp(c.sampled.ToBig()), 0,
-			"stableIn=%v: bound %s is BELOW chain %s", c.stableIn, bound, c.sampled)
-		if bound.Cmp(c.sampled.ToBig()) != 0 {
-			exact = false
-		}
-	}
-
-	_, _, ok := reSampleFees(e, x, rs, rv, x, rs, rv)
-	require.True(t, ok, "a holding bound must be admitted")
-	if exact {
-		t.Logf("regime 4 (saturated): priced exactly — stable-in %s, volatile-in %s",
-			e.FeeStableInWad, e.FeeVolatileInWad)
-	} else {
-		t.Logf("regime 5 (base off the cap): bound holds above chain %s / %s — safe, still directional",
-			e.FeeStableInWad, e.FeeVolatileInWad)
-	}
+	stableIn, volatileIn, ok := exactFeesAt(e, x, rs, rv)
+	require.True(t, ok)
+	require.Equal(t, e.FeeStableInWad.Dec(), stableIn.String())
+	require.Equal(t, e.FeeVolatileInWad.Dec(), volatileIn.String())
+	t.Logf("rv=%s reconstructs exact fees %s / %s", e.RealizedVarianceWad, stableIn, volatileIn)
 }
 
 // TestAbsentWordFailsSnapshot: nil is the only signal a read did not land. Pre-allocating
@@ -318,6 +296,7 @@ func TestAbsentWordFailsSnapshot(t *testing.T) {
 			xWad: new(big.Int).Div(bigWadFee, big.NewInt(2)), anchor: big.NewInt(1), kappa: big.NewInt(1),
 			reserveStable: big.NewInt(1), reserveVolatile: big.NewInt(1),
 			feeStableIn: big.NewInt(1), feeVolatileIn: big.NewInt(1),
+			pausedDecoded: true, feeHookDecoded: true, resvPrice: new(big.Int).Set(bigWadFee),
 		}
 	}
 	_, err := buildPoolState(entity.Pool{}, full(), big.NewInt(1))
@@ -332,6 +311,9 @@ func TestAbsentWordFailsSnapshot(t *testing.T) {
 		{"xWad", func(r *rpcState) { r.xWad = nil }},
 		{"kappa", func(r *rpcState) { r.kappa = nil }},
 		{"reserveStable", func(r *rpcState) { r.reserveStable = nil }},
+		{"reservationPrice", func(r *rpcState) { r.resvPrice = nil }},
+		{"paused decode", func(r *rpcState) { r.pausedDecoded = false }},
+		{"feeHook decode", func(r *rpcState) { r.feeHookDecoded = false }},
 	} {
 		rd := full()
 		c.drop(rd)
@@ -341,9 +323,8 @@ func TestAbsentWordFailsSnapshot(t *testing.T) {
 }
 
 // TestLazyPathPlansTheFeeLaw: the batched path cannot run a second round, so the fee-law
-// terms have to be planned in the SAME round as everything else. They were not, which
-// left batched snapshots permanently on the conservative fold while direct ones priced
-// the reversal — two paths quoting the same pool differently.
+// terms have to be planned in the SAME round as everything else. Otherwise the batched
+// path cannot attest the exact post-move fee and must disable a revisit.
 func TestLazyPathPlansTheFeeLaw(t *testing.T) {
 	collect := func(se *StaticExtra) map[string]bool {
 		got := map[string]bool{}
@@ -354,10 +335,12 @@ func TestLazyPathPlansTheFeeLaw(t *testing.T) {
 	withHook := collect(&StaticExtra{FeeHook: "0x00000000000000000000000000000000000000aa"})
 	for _, m := range []string{
 		hookMethodMidFee, hookMethodDirSkew, hookMethodInvSkewKappa,
-		hookMethodInvSkewBand, hookMethodCurvature, hookMethodLpFee, hookMethodHotFeeFloor,
+		hookMethodInvSkewBand, hookMethodCurvature, hookMethodLpFee, almMethodFfadState,
 	} {
 		require.True(t, withHook[m], "%s must be planned in the single round", m)
 	}
+	require.False(t, withHook[hookMethodHotFeeFloor],
+		"the optional floor is probed directly at the returned block with msg.sender=ALM")
 	require.True(t, withHook[almMethodFeeHook], "the live hook is re-read to detect a swap")
 
 	// No pinned hook: the terms are simply absent and the simulator keeps the fold.

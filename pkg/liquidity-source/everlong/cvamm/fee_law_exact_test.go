@@ -1,14 +1,12 @@
 package everlongcvamm
 
 import (
-	"bytes"
 	"context"
 	"math/big"
 	"os"
 	"testing"
 
 	"github.com/KyberNetwork/ethrpc"
-	"github.com/KyberNetwork/msgpack/v5"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -22,9 +20,8 @@ import (
 )
 
 // TestExactFeeLawMatchesChain: the ported law must reproduce poolFeeDirectional at the
-// LIVE book, in both directions, to the wei. That is the whole premise — the vol scalar
-// is solved from those two samples, so a law that does not reproduce them has solved for
-// nothing, and reSampleFeesExact must decline rather than quote it.
+// LIVE book, in both directions, to the wei. The scalar comes only from the block-pinned
+// CvammStore.rv word; sampled fees are an attestation, never an inference input.
 func TestExactFeeLawMatchesChain(t *testing.T) {
 	test.SkipCI(t)
 	ctx := context.Background()
@@ -32,6 +29,13 @@ func TestExactFeeLawMatchesChain(t *testing.T) {
 
 	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
+	var se StaticExtra
+	require.NoError(t, json.Unmarshal([]byte(pools[0].StaticExtra), &se))
+	require.Equal(t, supportedImplementationCodeHash.Hex(), se.ImplementationCodeHash)
+	hookCode, err := client.GetETHClient().CodeAt(ctx, common.HexToAddress(se.FeeHook), nil)
+	require.NoError(t, err)
+	require.Equal(t, supportedFeeHookCodeHash, crypto.Keccak256Hash(hookCode),
+		"an unknown hook may retain its sampled first quote but must not enable chained repricing")
 	tracked, err := NewPoolTracker(cfg, client).GetNewPoolState(ctx, pools[0], pool.GetNewPoolStateParams{})
 	require.NoError(t, err)
 	sim, err := NewPoolSimulator(tracked)
@@ -41,24 +45,17 @@ func TestExactFeeLawMatchesChain(t *testing.T) {
 	require.True(t, e.feeLawExactTracked(), "every term of the exact law must be tracked")
 	x, rs, rv := e.XWad.ToBig(), sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig()
 
-	c := newFeeCtx(e, x, rs, rv)
-	require.NotNil(t, c, "the live book must be inside the law's domain")
-	s, ok := solveVolScalar(e, c)
-	require.True(t, ok, "no vol scalar reproduces the sampled fees — the law has moved")
-
-	// Exact in both directions, or the solve landed on a floor-dominated sample and the
-	// scalar is only bounded. Either is sound, but only the first proves the port.
-	gotS, gotV := c.raw(e, s, true), c.raw(e, s, false)
+	gotS, gotV, ok := exactFeesAt(e, x, rs, rv)
+	require.True(t, ok, "the layout-read rv and hook state must price the live book")
 	require.Equal(t, e.FeeStableInWad.ToBig().String(), gotS.String(), "stable-in fee is not reproduced")
 	require.Equal(t, e.FeeVolatileInWad.ToBig().String(), gotV.String(), "volatile-in fee is not reproduced")
-	t.Logf("exact law reproduces chain wei-exactly: stable-in %s, volatile-in %s (scalar %s); "+
-		"the saturated bound would have quoted %s / %s",
-		gotS, gotV, s, feeUpperBoundWad(e, x, rs, rv, true), feeUpperBoundWad(e, x, rs, rv, false))
+	t.Logf("exact law reproduces chain wei-exactly: stable-in %s, volatile-in %s (rv %s, scalar %s)",
+		gotS, gotV, e.RealizedVarianceWad, realizedVarianceScalar(e))
 }
 
-// TestPostFillFeeParityAgainstChain is the claim the port exists for: a scalar solved at
-// the block BEFORE a settled swap must reprice the post-fill book to the fee the venue
-// actually charges after it.
+// TestPostFillFeeParityAgainstChain is the claim the port exists for: the scalar derived
+// from the implementation-pinned realized-variance slot at the block BEFORE a settled
+// swap must reprice the post-fill book to the fee the venue actually charges after it.
 //
 // Each case is only comparable when the settled fill is the whole of that block's motion,
 // so the simulated coordinate is checked against the chain's before the fees are — a
@@ -144,10 +141,8 @@ func TestPostFillFeeParityAgainstChain(t *testing.T) {
 				{"stable-in", sim.Extra.FeeStableInWad, after.Extra.FeeStableInWad},
 				{"volatile-in", sim.Extra.FeeVolatileInWad, after.Extra.FeeVolatileInWad},
 			} {
-				// The safety claim: a re-derived fee BELOW the venue's would hand the
-				// router a fill it will not honour.
-				require.False(t, d.derived.Lt(d.chain),
-					"%s: re-derived %s is BELOW chain %s", d.name, d.derived, d.chain)
+				require.True(t, d.derived.Eq(d.chain),
+					"%s: re-derived %s differs from chain %s", d.name, d.derived, d.chain)
 				if !d.derived.Eq(d.chain) {
 					allExact = false
 					t.Logf("%s: re-derived %s vs chain %s (+%s wad, safe side)",
@@ -200,12 +195,8 @@ func liveClient() (*ethrpc.Client, *Config) {
 func trackAt(t *testing.T, ctx context.Context, client *ethrpc.Client, p entity.Pool,
 	se *StaticExtra, block *big.Int) *PoolSimulator {
 	t.Helper()
-	rd := newRPCState()
-	req := client.NewRequest().SetContext(ctx).SetBlockNumber(block)
-	addRPCCalls(func(c *ethrpc.Call, o []any) { req.AddCall(c, o) }, p.Address, se, rd)
-	_, err := req.Aggregate()
-	require.NoError(t, err)
-	built, err := buildPoolState(p, rd, block)
+	_ = se
+	built, err := NewPoolTracker(nil, client).GetNewPoolStateAtBlock(ctx, p, block)
 	require.NoError(t, err)
 	sim, err := NewPoolSimulator(built)
 	require.NoError(t, err)
@@ -220,10 +211,13 @@ func signedWord(b []byte) *big.Int {
 	return v
 }
 
-// seedExactLaw installs the deployed Berachain hook's terms, with the anchor derived from
-// the fixture's own sqrt price the way the ALM derives it — a mismatched anchor reads as a
-// vast dislocation and pins the vol term to its clamp, which is not the regime under test.
+// seedExactLaw installs the deployed hook's terms and an exact live floor. setRVForScalar
+// supplies the only otherwise-hidden law input without deriving it from a fee sample.
 func seedExactLaw(e *Extra) {
+	e.FeeHookActive = true
+	e.HotFloorsExact = true
+	e.FloorStableInWad = new(uint256.Int)
+	e.FloorVolatileInWad = new(uint256.Int)
 	e.ReservationPriceWad, _ = uint256.FromBig(
 		spotRawWad(e.AnchorSqrtX96.ToBig(), bigHalfWad, e.Support.AWad.ToBig()))
 	e.MidFeeWad = uint256.NewInt(30_000_000_000_000_000)
@@ -237,225 +231,95 @@ func seedExactLaw(e *Extra) {
 	e.VolBetaWad = uint256.NewInt(4_000_000_000_000_000_000)
 	e.VolMinWad = uint256.NewInt(500_000_000_000_000_000)
 	e.VolMaxWad = uint256.NewInt(2_000_000_000_000_000_000)
+	setRVForScalar(e, big.NewInt(400_000_000_000_000_000))
 }
 
-// TestExactLawPricesUnderTheSaturatedBound is the regression the port exists for. Off the
-// cap the bound substitutes MidFee for a base the venue prices lower, so a revisit was
-// quoted the whole gap too wide. The re-derived fee must sit under that bound and still
-// never fall below what the venue would charge at the scalar the sample was drawn from.
-func TestExactLawPricesUnderTheSaturatedBound(t *testing.T) {
-	stableInCases, _ := fillableCases(t)
-	require.NotEmpty(t, stableInCases)
-	sim := simFromFixture(t, stableInCases[0], nil)
+func setRVForScalar(e *Extra, scalar *big.Int) {
+	sigma := mulDivFloor(scalar, e.VolSigmaRefWad.ToBig(), bigWadFee)
+	sigma.Div(sigma, big.NewInt(1_000_000_000))
+	e.RealizedVarianceWad, _ = uint256.FromBig(new(big.Int).Mul(sigma, sigma))
+}
 
+func seedSampleFromExactLaw(t *testing.T, sim *PoolSimulator) {
+	t.Helper()
 	e := &sim.Extra
-	seedExactLaw(e)
-	require.True(t, e.feeLawExactTracked())
-
-	x, rs, rv := e.XWad.ToBig(), sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig()
-	pre := newFeeCtx(e, x, rs, rv)
-	require.NotNil(t, pre)
-	// Low enough that the base stays OFF the cap at this fixture's dislocation, which is
-	// the only regime where the two derivations differ.
-	trueScalar := big.NewInt(400_000_000_000_000_000)
-	e.FeeStableInWad, _ = uint256.FromBig(pre.raw(e, trueScalar, true))
-	e.FeeVolatileInWad, _ = uint256.FromBig(pre.raw(e, trueScalar, false))
-	require.Positive(t, feeUpperBoundWad(e, x, rs, rv, true).Cmp(e.FeeStableInWad.ToBig()),
-		"the fixture must be OFF the cap or this proves nothing")
-
-	res, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
-		TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: stableInCases[0].amountIn.ToBig()},
-		TokenOut:      testVol,
-	})
-	require.NoError(t, err)
-	sim.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: res.SwapInfo})
-
-	postX, postS, postV := e.XWad.ToBig(), sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig()
-	post := newFeeCtx(e, postX, postS, postV)
-	require.NotNil(t, post)
-	require.False(t, e.FeeStableInWad.Eq(e.FeeVolatileInWad), "the legs must stay directional")
-
-	for _, d := range []struct {
-		name     string
-		stableIn bool
-		got      *uint256.Int
-	}{
-		{"stable-in", true, e.FeeStableInWad}, {"volatile-in", false, e.FeeVolatileInWad},
-	} {
-		truth := post.raw(e, trueScalar, d.stableIn)
-		bound := feeUpperBoundWad(e, postX, postS, postV, d.stableIn)
-		require.False(t, d.got.ToBig().Cmp(truth) < 0,
-			"%s: re-derived %s is BELOW the venue's %s", d.name, d.got, truth)
-		require.False(t, d.got.ToBig().Cmp(bound) > 0,
-			"%s: re-derived %s is WIDER than the saturated bound %s", d.name, d.got, bound)
-		t.Logf("%s: re-derived %s vs venue %s (bound would have quoted %s)", d.name, d.got, truth, bound)
-	}
+	s, v, ok := exactFeesAt(e, e.XWad.ToBig(), sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig())
+	require.True(t, ok)
+	e.FeeStableInWad, _ = uint256.FromBig(s)
+	e.FeeVolatileInWad, _ = uint256.FromBig(v)
 }
 
-// TestExactLawRespectsHookFloor: the floor is never read, it is inferred from the sample
-// that already carries it. A sample the law cannot reach on its own is a floor, and both
-// legs must stay at it after the fill rather than dropping to the unfloored law.
-func TestExactLawRespectsHookFloor(t *testing.T) {
-	stableInCases, _ := fillableCases(t)
-	require.NotEmpty(t, stableInCases)
-	sim := simFromFixture(t, stableInCases[0], nil)
-
-	e := &sim.Extra
-	seedExactLaw(e)
-	const floor = 900_000_000_000_000_000
-	e.FeeStableInWad = uint256.NewInt(floor)
-	e.FeeVolatileInWad = uint256.NewInt(floor)
-	e.FloorStableInWad = uint256.NewInt(floor)
-	e.FloorVolatileInWad = uint256.NewInt(floor)
-
-	res, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
-		TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: stableInCases[0].amountIn.ToBig()},
-		TokenOut:      testVol,
-	})
-	require.NoError(t, err)
-	sim.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: res.SwapInfo})
-
-	require.True(t, e.FeeStableInWad.Eq(uint256.NewInt(floor)),
-		"a floored sample must not be repriced under the floor")
-	require.True(t, e.FeeVolatileInWad.Eq(uint256.NewInt(floor)))
-}
-
-// TestExactLawDeclinesWhenSampleIsUnreachable: a sample the modelled law cannot produce at
-// ANY scalar means the law no longer describes the venue, and the solve must refuse rather
-// than bracket nonsense. The saturated bound still stands behind it.
-func TestExactLawDeclinesWhenSampleIsUnreachable(t *testing.T) {
-	stableInCases, _ := fillableCases(t)
-	require.NotEmpty(t, stableInCases)
-	sim := simFromFixture(t, stableInCases[0], nil)
-
-	e := &sim.Extra
-	seedExactLaw(e)
-	x, rs, rv := e.XWad.ToBig(), sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig()
-	// Below the imbalanced fee, which is the law's floor at every scalar.
-	e.FeeStableInWad = uint256.NewInt(1)
-	e.FeeVolatileInWad = uint256.NewInt(1)
-
-	_, _, ok := reSampleFeesExact(e, &feeSolve{}, x, rs, rv, x, rs, rv)
-	require.False(t, ok, "an unreachable sample must not be solved for")
-	_, _, ok = reSampleFeesBest(e, &feeSolve{}, x, rs, rv, x, rs, rv)
-	require.True(t, ok, "the saturated bound must still stand behind the exact law")
-}
-
-// TestSolveCacheSurvivesTheServiceHop: the solved scalar and the block's own fee samples
-// live in UNEXPORTED simulator state, so they cross pool-service -> router-service only
-// because pkg/msgpack sets IncludeUnexported(true). Dropped there, the next hop would
-// re-solve from an already re-derived fee and ratchet the haircut up instead of repricing.
-func TestSolveCacheSurvivesTheServiceHop(t *testing.T) {
+func TestExactLawRepricesFromStorageRV(t *testing.T) {
 	cases, _ := fillableCases(t)
-	require.NotEmpty(t, cases)
 	sim := simFromFixture(t, cases[0], nil)
 	seedExactLaw(&sim.Extra)
-
-	x, rs, rv := sim.Extra.XWad.ToBig(), sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig()
-	c := newFeeCtx(&sim.Extra, x, rs, rv)
-	require.NotNil(t, c)
-	sim.Extra.FeeStableInWad, _ = uint256.FromBig(c.raw(&sim.Extra, big.NewInt(400_000_000_000_000_000), true))
-	sim.Extra.FeeVolatileInWad, _ = uint256.FromBig(c.raw(&sim.Extra, big.NewInt(400_000_000_000_000_000), false))
-	require.True(t, sim.feeSolve.solve(&sim.Extra, x, rs, rv), "the fixture must solve")
-
-	var buf bytes.Buffer
-	enc := msgpack.NewEncoder(&buf)
-	enc.IncludeUnexported(true)
-	enc.SetForceAsArray(true)
-	require.NoError(t, enc.Encode(sim))
-	dec := msgpack.NewDecoder(&buf)
-	dec.IncludeUnexported(true)
-	var decoded PoolSimulator
-	require.NoError(t, dec.Decode(&decoded))
-
-	require.True(t, decoded.feeSolve.tried, "the solve must not be re-attempted after the hop")
-	require.NotNil(t, decoded.feeSolve.scalar)
-	require.Equal(t, sim.feeSolve.scalar.String(), decoded.feeSolve.scalar.String())
-
-	// And the re-derivation must land on the same fees on both sides of the hop.
-	for _, s := range []*PoolSimulator{sim, &decoded} {
-		res, err := s.CalcAmountOut(pool.CalcAmountOutParams{
-			TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: cases[0].amountIn.ToBig()},
-			TokenOut:      testVol,
-		})
-		require.NoError(t, err)
-		s.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: res.SwapInfo})
-	}
-	require.Equal(t, sim.Extra.FeeStableInWad.Dec(), decoded.Extra.FeeStableInWad.Dec())
-	require.Equal(t, sim.Extra.FeeVolatileInWad.Dec(), decoded.Extra.FeeVolatileInWad.Dec())
-}
-
-// TestReversalRepricedExactly is the regression the port exists for, and the one the
-// floor bound nearly cost: a fill that flips which direction restores the price must
-// reprice the REVERSING leg to what the venue would charge, not carry forward the higher
-// pre-fill sample it had for the opposite direction. Carrying it forward re-imposed the
-// fee the fill had just moved away from, which is exactly the revisit the reviewer
-// measured at 58-59 bps.
-func TestReversalRepricedExactly(t *testing.T) {
-	stableInCases, _ := fillableCases(t)
-	require.Greater(t, len(stableInCases), 59)
-	// This case is chosen to make the assertion below meaningful in three ways at once:
-	// the fill carries the price ACROSS the anchor (so the restoring leg swaps over), the
-	// pre-fill sample sits off the cap (so it identifies the scalar rather than merely
-	// bounding it), and the post-fill book is off the cap too (so the saturated bound is
-	// loose and cannot mask a conservative re-derivation through the min).
-	c := stableInCases[59]
-	sim := simFromFixture(t, c, nil)
-
-	e := &sim.Extra
-	seedExactLaw(e)
-	// Saturated-rate floors well below anything the law produces here, so the floor is
-	// present but never the binding term — the reversal must be priced by the law.
-	e.FloorStableInWad = uint256.NewInt(1)
-	e.FloorVolatileInWad = uint256.NewInt(1)
-
-	x, rs, rv := e.XWad.ToBig(), sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig()
-	pre := newFeeCtx(e, x, rs, rv)
-	require.NotNil(t, pre)
-	// Low enough that the post-fill book stays OFF the cap, so the saturated bound is
-	// loose there too and cannot mask a conservative re-derivation.
-	trueScalar := big.NewInt(100_000_000_000_000_000)
-	e.FeeStableInWad, _ = uint256.FromBig(pre.raw(e, trueScalar, true))
-	e.FeeVolatileInWad, _ = uint256.FromBig(pre.raw(e, trueScalar, false))
-
-	anchor := e.ReservationPriceWad.ToBig()
-	aWad := e.Support.AWad.ToBig()
-	preBelow := spotRawWad(e.AnchorSqrtX96.ToBig(), x, aWad).Cmp(anchor) < 0
+	seedSampleFromExactLaw(t, sim)
 
 	res, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
-		TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: c.amountIn.ToBig()},
-		TokenOut:      testVol,
-	})
+		TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: cases[0].amountIn.ToBig()}, TokenOut: testVol})
 	require.NoError(t, err)
 	sim.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: res.SwapInfo})
+	require.True(t, sim.feeStateExact)
+	wantS, wantV, ok := exactFeesAt(&sim.Extra, sim.Extra.XWad.ToBig(),
+		sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig())
+	require.True(t, ok)
+	require.Equal(t, wantS.String(), sim.Extra.FeeStableInWad.Dec())
+	require.Equal(t, wantV.String(), sim.Extra.FeeVolatileInWad.Dec())
+}
 
-	postX, postS, postV := e.XWad.ToBig(), sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig()
-	post := newFeeCtx(e, postX, postS, postV)
-	require.NotNil(t, post)
-	postBelow := spotRawWad(e.AnchorSqrtX96.ToBig(), postX, aWad).Cmp(anchor) < 0
-	require.NotEqual(t, preBelow, postBelow, "the fill must cross the anchor for this to mean anything")
+func TestExactLawRespectsLiveFloor(t *testing.T) {
+	cases, _ := fillableCases(t)
+	sim := simFromFixture(t, cases[0], nil)
+	seedExactLaw(&sim.Extra)
+	const floor = 900_000_000_000_000_000
+	sim.Extra.FloorStableInWad = uint256.NewInt(floor)
+	sim.Extra.FloorVolatileInWad = uint256.NewInt(floor)
+	seedSampleFromExactLaw(t, sim)
 
-	// The reversing leg is the one whose fee the fill LOWERS; it is the one a revisit pays.
-	for _, d := range []struct {
-		name     string
-		stableIn bool
-		got      *uint256.Int
-	}{
-		{"stable-in", true, e.FeeStableInWad}, {"volatile-in", false, e.FeeVolatileInWad},
+	res, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
+		TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: cases[0].amountIn.ToBig()}, TokenOut: testVol})
+	require.NoError(t, err)
+	sim.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: res.SwapInfo})
+	require.True(t, sim.Extra.FeeStableInWad.Eq(uint256.NewInt(floor)))
+	require.True(t, sim.Extra.FeeVolatileInWad.Eq(uint256.NewInt(floor)))
+}
+
+func TestExactLawFailsClosedOnMissingOrMismatchedState(t *testing.T) {
+	cases, _ := fillableCases(t)
+	for _, mutate := range []func(*Extra){
+		func(e *Extra) { e.RealizedVarianceWad = nil },
+		func(e *Extra) { e.HotFloorsExact = false },
+		func(e *Extra) { e.FeeStableInWad.AddUint64(e.FeeStableInWad, 1) },
 	} {
-		truth := post.raw(e, trueScalar, d.stableIn)
-		drift := new(big.Int).Sub(d.got.ToBig(), truth)
-		// Never under the venue's fee, and within a wei or two of it: the scalar is solved
-		// as the largest the sample admits, so the fee it produces is the venue's rounded
-		// up, not a conservative substitute. Before the floor bound was tightened, the
-		// reversing leg came back a whole directional step high instead.
-		require.False(t, drift.Sign() < 0,
-			"%s: repriced %s BELOW the venue's %s", d.name, d.got, truth)
-		require.True(t, drift.Cmp(big.NewInt(2)) <= 0,
-			"%s: repriced %s vs the venue's %s (%s wei high)", d.name, d.got, truth, drift)
-		// And the saturated bound must genuinely be loose here, or the min() with it
-		// would mask a conservative re-derivation and this would prove nothing.
-		require.Positive(t, feeUpperBoundWad(e, postX, postS, postV, d.stableIn).Cmp(truth),
-			"%s: the bound is tight here, so the exact law is not under test", d.name)
+		sim := simFromFixture(t, cases[0], nil)
+		seedExactLaw(&sim.Extra)
+		seedSampleFromExactLaw(t, sim)
+		mutate(&sim.Extra)
+		res, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
+			TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: cases[0].amountIn.ToBig()}, TokenOut: testVol})
+		require.NoError(t, err, "the block-sampled first quote remains exact")
+		sim.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: res.SwapInfo})
+		_, err = sim.CalcAmountOut(pool.CalcAmountOutParams{
+			TokenAmountIn: pool.TokenAmount{Token: testVol, Amount: big.NewInt(1e8)}, TokenOut: testStable})
+		require.ErrorIs(t, err, ErrInexactFeeState)
 	}
+}
+
+func TestReversalRepricedExactlyFromRV(t *testing.T) {
+	cases, _ := fillableCases(t)
+	require.Greater(t, len(cases), 59)
+	sim := simFromFixture(t, cases[59], nil)
+	seedExactLaw(&sim.Extra)
+	setRVForScalar(&sim.Extra, big.NewInt(100_000_000_000_000_000))
+	seedSampleFromExactLaw(t, sim)
+
+	res, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
+		TokenAmountIn: pool.TokenAmount{Token: testStable, Amount: cases[59].amountIn.ToBig()}, TokenOut: testVol})
+	require.NoError(t, err)
+	sim.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: res.SwapInfo})
+	wantS, wantV, ok := exactFeesAt(&sim.Extra, sim.Extra.XWad.ToBig(),
+		sim.reserveStable.ToBig(), sim.reserveVolatile.ToBig())
+	require.True(t, ok)
+	require.Equal(t, wantS.String(), sim.Extra.FeeStableInWad.Dec())
+	require.Equal(t, wantV.String(), sim.Extra.FeeVolatileInWad.Dec())
 }

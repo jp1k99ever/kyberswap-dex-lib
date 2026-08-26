@@ -10,6 +10,10 @@ type StaticExtra struct {
 	Swapper    string `json:"swapper"` // CollateralRebalancerSwapper — swap call + approval target
 	CollVault  string `json:"cv"`
 	ALM        string `json:"alm"` // the swapper's ALM adapter (reserves/valuation reads)
+	// ALMAdapterCodeHash attests the exact non-proxy wrapper implementation whose
+	// reservationValuePerShareWad rounding the simulator mirrors. The swapper's ALM
+	// pointer is immutable; a new swapper is relisted and re-attested.
+	ALMAdapterCodeHash string `json:"almCodeHash,omitempty"`
 	// The CvammALM the adapter wraps (resolved from its alm() getter at listing) — the
 	// everlong-cvamm base pool for meta coupling.
 	UnderlyingCvamm string `json:"ucv,omitempty"`
@@ -100,8 +104,12 @@ type SwapInfo struct {
 	IdleVolatileDelta *big.Int `json:"dIdleV,omitempty"`
 	PostCvTotalAssets *big.Int `json:"postCta,omitempty"`
 	PostCvTotalSupply *big.Int `json:"postCts,omitempty"`
-	PostPriceWad      *big.Int `json:"postR,omitempty"`
-	AlmBurned         *big.Int `json:"almBurned,omitempty"`
+	// PostRvpsWad is the legacy ClammAlmAdapter reservationValuePerShareWad after the
+	// exact underlying deposit/withdraw floors. It is not invariant under a pro-rata
+	// liquidity move because kappa, idle and supply are floored independently.
+	PostRvpsWad  *big.Int `json:"postRvps,omitempty"`
+	PostPriceWad *big.Int `json:"postR,omitempty"`
+	AlmBurned    *big.Int `json:"almBurned,omitempty"`
 }
 
 // exchangeStateRaw / totalAmountsRaw / reservesAtReferenceRaw are ethrpc decode

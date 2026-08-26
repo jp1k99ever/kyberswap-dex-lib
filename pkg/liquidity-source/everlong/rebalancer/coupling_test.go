@@ -28,6 +28,150 @@ import (
 //   - UpdateBalance absorbs the base deltas once (baseline advances — no double count).
 var bigWadTest = new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
 
+type liquidityReplayCall struct {
+	shares, supply, used0, used1 *big.Int
+}
+
+type exactBaseStub struct {
+	pool.Pool
+	totals []*big.Int
+	exact  bool
+	calls  []liquidityReplayCall
+	xWad   *big.Int
+}
+
+func newExactBaseStub(address string) *exactBaseStub {
+	reserves := []*big.Int{big.NewInt(1_000_000), big.NewInt(2_000_000)}
+	return &exactBaseStub{
+		Pool: pool.Pool{Info: pool.PoolInfo{
+			Address:  address,
+			Tokens:   []string{testNECT, testWBTC},
+			Reserves: []*big.Int{new(big.Int).Set(reserves[0]), new(big.Int).Set(reserves[1])},
+		}},
+		totals: reserves,
+		exact:  true,
+		xWad:   new(big.Int).Set(bigWadTest),
+	}
+}
+
+func (b *exactBaseStub) CalcAmountOut(pool.CalcAmountOutParams) (*pool.CalcAmountOutResult, error) {
+	return nil, nil
+}
+func (b *exactBaseStub) UpdateBalance(pool.UpdateBalanceParams) {}
+func (b *exactBaseStub) GetMetaInfo(_, _ string) any            { return nil }
+func (b *exactBaseStub) GetTotalReserves() []*big.Int           { return b.totals }
+func (b *exactBaseStub) IsLiquidityStateExact() bool            { return b.exact }
+func (b *exactBaseStub) InvalidateLiquidityState()              { b.exact = false }
+func (b *exactBaseStub) CurrentInventoryXWad() *big.Int         { return new(big.Int).Set(b.xWad) }
+func (b *exactBaseStub) ReservationValuePerShareWad(_, _ *big.Int) (*big.Int, bool) {
+	return new(big.Int).Set(bigWadTest), b.exact
+}
+
+func TestPriceMovingBaseDeltaDisablesOnlyLeverage(t *testing.T) {
+	sim, base := exactCouplingHarness(t)
+	base.xWad.Add(base.xWad, big.NewInt(1))
+	base.totals[0].Add(base.totals[0], big.NewInt(1))
+	base.Info.Reserves[0].Add(base.Info.Reserves[0], big.NewInt(1))
+
+	_, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
+		TokenAmountIn: pool.TokenAmount{Token: sim.Info.Tokens[1], Amount: big.NewInt(1)},
+		TokenOut:      sim.Info.Tokens[0],
+	})
+	require.ErrorIs(t, err, ErrVenueGateClosed)
+	require.ErrorIs(t, err, ErrUnattestedReference)
+
+	_, err = sim.CalcAmountOut(pool.CalcAmountOutParams{
+		TokenAmountIn: pool.TokenAmount{Token: sim.Info.Tokens[0], Amount: big.NewInt(1)},
+		TokenOut:      sim.Info.Tokens[1],
+	})
+	require.NotErrorIs(t, err, ErrUnattestedReference,
+		"the adapter's reference-oracle check is leverage-only")
+}
+func (b *exactBaseStub) ApplyLiquidityDelta(shares, supply, used0, used1 *big.Int) (
+	*big.Int, *big.Int, *big.Int, *big.Int) {
+	clone := func(v *big.Int) *big.Int {
+		if v == nil {
+			return nil
+		}
+		return new(big.Int).Set(v)
+	}
+	b.calls = append(b.calls, liquidityReplayCall{clone(shares), clone(supply), clone(used0), clone(used1)})
+	return new(big.Int), new(big.Int), new(big.Int), new(big.Int)
+}
+
+func exactCouplingHarness(t *testing.T) (*PoolSimulator, *exactBaseStub) {
+	sim := newTestPoolSimulator(t)
+	sim.StaticExtra.UnderlyingCvamm = "0x000000000000000000000000000000000000c0de"
+	sim.Extra.AlmIdleStable = new(big.Int)
+	sim.Extra.AlmIdleVolatile = new(big.Int)
+	sim.Extra.RvpsWad = new(big.Int).Set(bigWadTest)
+	sim.Extra.AlmResvPriceWad = new(big.Int).Set(bigWadTest)
+	base := newExactBaseStub(sim.StaticExtra.UnderlyingCvamm)
+	sim.wireBase(base)
+	require.NotNil(t, sim.basePool)
+	// Test-only harness: production enables this latch exclusively after the coupled
+	// factory's full snapshot-coherence attestation.
+	sim.couplingExact = true
+	return sim, base
+}
+
+func TestBareSimulatorFailsClosedUntilExactBaseWiring(t *testing.T) {
+	sim, err := NewPoolSimulator(newTestPoolEntity(t))
+	require.NoError(t, err)
+	_, err = sim.CalcAmountOut(pool.CalcAmountOutParams{
+		TokenAmountIn: pool.TokenAmount{Token: sim.Info.Tokens[0], Amount: big.NewInt(1)},
+		TokenOut:      sim.Info.Tokens[1],
+	})
+	require.ErrorIs(t, err, ErrInexactCoupledState)
+}
+
+func TestCoupledFactoryRejectsUnknownAdapterRuntime(t *testing.T) {
+	known := newTestPoolSimulator(t)
+	p := newTestPoolEntity(t)
+	var se StaticExtra
+	require.NoError(t, json.Unmarshal([]byte(p.StaticExtra), &se))
+	se.ALMAdapterCodeHash = "0xdeadbeef"
+	raw, err := json.Marshal(se)
+	require.NoError(t, err)
+	p.StaticExtra = string(raw)
+
+	_, err = NewPoolSimulatorWithBases(p,
+		map[string]pool.IPoolSimulator{se.UnderlyingCvamm: known.basePool})
+	require.ErrorIs(t, err, ErrUnsupportedAdapter)
+}
+
+func TestReverseCouplingRequiresExactTransitionShape(t *testing.T) {
+	t.Run("deposit then sell-back", func(t *testing.T) {
+		sim, base := exactCouplingHarness(t)
+		supply := new(big.Int).Set(sim.Extra.AlmSupply)
+		require.True(t, sim.pushLeverageToBase(SwapInfo{
+			AlmMintedShares:  big.NewInt(10),
+			AlmUsedStable:    big.NewInt(20),
+			AlmUsedVolatile:  big.NewInt(30),
+			AlmSoldBackShare: big.NewInt(3),
+		}, supply))
+		require.Len(t, base.calls, 2)
+		require.Equal(t, "10", base.calls[0].shares.String())
+		require.Equal(t, supply.String(), base.calls[0].supply.String())
+		require.Equal(t, "20", base.calls[0].used0.String())
+		require.Equal(t, "30", base.calls[0].used1.String())
+		require.Equal(t, "-3", base.calls[1].shares.String())
+		require.Equal(t, new(big.Int).Add(supply, big.NewInt(10)).String(), base.calls[1].supply.String())
+	})
+
+	t.Run("legacy net-share shape", func(t *testing.T) {
+		sim, base := exactCouplingHarness(t)
+		require.False(t, sim.pushLeverageToBase(SwapInfo{AlmShares: big.NewInt(7)}, sim.Extra.AlmSupply))
+		require.False(t, base.IsLiquidityStateExact(), "the direct base path must be disabled too")
+		_, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
+			TokenAmountIn: pool.TokenAmount{Token: sim.Info.Tokens[1], Amount: big.NewInt(1)},
+			TokenOut:      sim.Info.Tokens[0],
+		})
+		require.ErrorIs(t, err, ErrInexactCoupledState)
+		require.Empty(t, base.calls, "a legacy net delta must never reach ApplyLiquidityDelta")
+	})
+}
+
 func TestBasePoolCoupling(t *testing.T) {
 	test.SkipCI(t)
 	ctx := context.Background()
@@ -78,13 +222,11 @@ func TestBasePoolCoupling(t *testing.T) {
 		TokenOut:      volatile,
 	}
 
-	// 1) no base movement: coupled == uncoupled
+	// 1) no base movement: only the fully attested meta-factory instance can quote.
 	q0, err0 := coupled.CalcAmountOut(quoteIn)
-	u0, uerr0 := uncoupled.CalcAmountOut(quoteIn)
-	require.Equal(t, uerr0 == nil, err0 == nil)
-	if err0 == nil {
-		require.Equal(t, u0.TokenAmountOut.Amount, q0.TokenAmountOut.Amount)
-	}
+	_, uerr0 := uncoupled.CalcAmountOut(quoteIn)
+	require.ErrorIs(t, uerr0, ErrInexactCoupledState)
+	shifted := coupled.CloneState().(*PoolSimulator)
 
 	// 2) apply a CVAMM fill to the base and expect the coupled quote to move and match a
 	// manually shifted snapshot
@@ -101,6 +243,10 @@ func TestBasePoolCoupling(t *testing.T) {
 	beforeAcc := base.GetReserves()
 	base.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: swap.SwapInfo})
 	afterTot := base.GetTotalReserves()
+	_, staleErr := NewPoolSimulatorWithBases(tracked,
+		map[string]pool.IPoolSimulator{se.UnderlyingCvamm: base})
+	require.ErrorIs(t, staleErr, ErrInexactCoupledState,
+		"different-block rebalancer/base snapshots must never be wired")
 	dS := new(big.Int).Sub(afterTot[0], beforeTot[0])
 	dV := new(big.Int).Sub(afterTot[1], beforeTot[1])
 	require.True(t, dS.Sign() != 0 || dV.Sign() != 0)
@@ -112,9 +258,16 @@ func TestBasePoolCoupling(t *testing.T) {
 	fS := new(big.Int).Sub(dS, new(big.Int).Sub(afterAcc[0], beforeAcc[0]))
 	fV := new(big.Int).Sub(dV, dAccV)
 
-	shifted, err := NewPoolSimulator(tracked)
-	require.NoError(t, err)
-	foldBaseDeltas(&shifted.Extra, dS, dV, fS, fV)
+	postRvps, ok := base.ReservationValuePerShareWad(shifted.Extra.AlmResvPriceWad, shifted.Extra.AlmSupply)
+	require.True(t, ok)
+	require.True(t, foldBaseDeltas(&shifted.Extra, dS, dV, fS, fV, postRvps))
+	shifted.basePool = base.CloneState()
+	totals, accounted, ok := exactBaseBook(shifted.basePool)
+	require.True(t, ok)
+	shifted.baseStable0 = new(big.Int).Set(totals[0])
+	shifted.baseVolatile0 = new(big.Int).Set(totals[1])
+	shifted.baseAccStable0 = new(big.Int).Set(accounted[0])
+	shifted.baseAccVolatile0 = new(big.Int).Set(accounted[1])
 
 	q1, err1 := coupled.CalcAmountOut(quoteIn)
 	s1, serr1 := shifted.CalcAmountOut(quoteIn)
@@ -136,10 +289,10 @@ func TestBasePoolCoupling(t *testing.T) {
 	}
 }
 
-// TestReverseCouplingAgainstChain replays the settled leverage fill at block 24,863,882
-// (the review's counter-example) through the COUPLED sims and compares the pushed base
-// CVAMM state against the chain at the fill block: reserves must shift by the fill's ALM
-// legs and kappa by the pro-rata supply scale, with x, anchor and band untouched.
+// TestReverseCouplingAgainstChain replays the exact Deposit+Withdraw pair emitted by a
+// settled leverage fill at block 24,863,882. Using the event's share counts and token
+// legs isolates the transition from keeper lot selection: every post-fill book word must
+// equal the chain, with no bps/ppm tolerance.
 func TestReverseCouplingAgainstChain(t *testing.T) {
 	test.SkipCI(t)
 	ctx := context.Background()
@@ -160,20 +313,6 @@ func TestReverseCouplingAgainstChain(t *testing.T) {
 	receipt, err := geth.TransactionReceipt(ctx, common.HexToHash(fillTx))
 	require.NoError(t, err)
 	parent := new(big.Int).Sub(receipt.BlockNumber, big.NewInt(1))
-
-	// The physical WBTC the caller paid: the volatile Transfer into the swapper.
-	transferTopic := common.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
-	volatileToken := common.HexToAddress(cfg.Volatile)
-	swapper := common.HexToAddress(se.Swapper)
-	var amountIn *big.Int
-	for _, lg := range receipt.Logs {
-		if lg.Address == volatileToken && len(lg.Topics) == 3 && lg.Topics[0] == transferTopic &&
-			common.BytesToAddress(lg.Topics[2].Bytes()) == swapper {
-			amountIn = new(big.Int).SetBytes(lg.Data)
-			break
-		}
-	}
-	require.NotNil(t, amountIn, "caller volatile transfer not found")
 
 	// Rebalancer snapshot at the parent block.
 	rd := newRPCState()
@@ -208,72 +347,70 @@ func TestReverseCouplingAgainstChain(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, coupled.basePool)
 
-	// Replay the settled leverage fill (volatile in) and push it through UpdateBalance.
-	res, err := coupled.CalcAmountOut(pool.CalcAmountOutParams{
-		TokenAmountIn: pool.TokenAmount{Token: coupled.Info.Tokens[1], Amount: amountIn},
-		TokenOut:      coupled.Info.Tokens[0],
-	})
+	depositTopic := common.HexToHash("0x4e2ca0515ed1aef1395f66b5303bb5d6f1bf9d61a353fa53f73f8ac9973fa9f6")
+	withdrawTopic := common.HexToHash("0xebff2602b3f468259e1e99f613fed6691f3a6526effe6ef3e768ba7ae7a36c4f")
+	decodeTriple := func(data []byte) (shares, amount0, amount1 *big.Int) {
+		require.Len(t, data, 96)
+		return new(big.Int).SetBytes(data[:32]), new(big.Int).SetBytes(data[32:64]),
+			new(big.Int).SetBytes(data[64:96])
+	}
+	var minted, used0, used1, soldBack *big.Int
+	alm := common.HexToAddress(se.UnderlyingCvamm)
+	for _, lg := range receipt.Logs {
+		if lg.Address != alm || len(lg.Topics) == 0 {
+			continue
+		}
+		switch lg.Topics[0] {
+		case depositTopic:
+			minted, used0, used1 = decodeTriple(lg.Data)
+		case withdrawTopic:
+			soldBack, _, _ = decodeTriple(lg.Data)
+		}
+	}
+	require.NotNil(t, minted, "CvammALM Deposit event not found")
+	require.NotNil(t, soldBack, "CvammALM Withdraw event not found")
+	require.True(t, coupled.pushLeverageToBase(SwapInfo{
+		AlmMintedShares:  minted,
+		AlmUsedStable:    used0,
+		AlmUsedVolatile:  used1,
+		AlmSoldBackShare: soldBack,
+	}, coupled.Extra.AlmSupply))
+
+	assertPair := func(label string, got, want []*big.Int) {
+		require.Len(t, got, 2)
+		require.Len(t, want, 2)
+		require.Zero(t, got[0].Cmp(want[0]), "%s stable: got %s want %s", label, got[0], want[0])
+		require.Zero(t, got[1].Cmp(want[1]), "%s volatile: got %s want %s", label, got[1], want[1])
+	}
+	assertPair("accounted reserves", base.GetReserves(), truth.GetReserves())
+	assertPair("total reserves", base.GetTotalReserves(), truth.GetTotalReserves())
+	require.Zero(t, base.Extra.XWad.Cmp(truth.Extra.XWad), "x")
+	require.Zero(t, base.Extra.AnchorSqrtX96.Cmp(truth.Extra.AnchorSqrtX96), "anchor")
+	require.Zero(t, base.Extra.Kappa.Cmp(truth.Extra.Kappa), "kappa")
+	require.Zero(t, base.Extra.FeeStableInWad.Cmp(truth.Extra.FeeStableInWad), "stable-in fee")
+	require.Zero(t, base.Extra.FeeVolatileInWad.Cmp(truth.Extra.FeeVolatileInWad), "volatile-in fee")
+
+	// The legacy ClammAlmAdapter recomputes its center NAV after the same four bucket
+	// floors, then divides once by the NEW LP supply. Pin that wrapper layer too: it is
+	// the reservation value CollateralRebalancer reads after execution.
+	postRd := newRPCState()
+	postReq := client.NewRequest().SetContext(ctx).SetBlockNumber(receipt.BlockNumber)
+	addRPCCalls(func(c *ethrpc.Call, o []any) { postReq.AddCall(c, o) }, &se, postRd, nil)
+	_, err = postReq.TryAggregate()
 	require.NoError(t, err)
-	coupled.UpdateBalance(pool.UpdateBalanceParams{SwapInfo: res.SwapInfo})
-
-	gotRes, wantRes := base.GetReserves(), truth.GetReserves()
-	// The TRANSITION is the venue's own: ApplyLiquidityDelta replays CvammALM.deposit and
-	// withdraw, flooring the reserve and idle legs separately and scaling kappa by
-	// (supply +/- shares) / supply, and TestApplyLiquidityDeltaReplaysTheVenue pins it
-	// against that arithmetic directly. x is unmoved to the wei either way.
-	//
-	// What is left here is not the transition but the LOT: this replays a settled keeper
-	// fill by feeding its volatile input to our own quote, which sizes the share count
-	// itself, so a lot a fraction of a percent from the keeper's leaves a book a few bps
-	// from the chain's. That is a sizing comparison, and it is what these bounds measure.
-	require.Zero(t, base.Extra.XWad.Cmp(truth.Extra.XWad), "x must be unmoved by a pro-rata leg")
-	relDiffBps := func(got, want *big.Int) int64 {
-		d := new(big.Int).Abs(new(big.Int).Sub(got, want))
-		d.Mul(d, big.NewInt(10_000))
-		return new(big.Int).Div(d, want).Int64()
-	}
-	require.LessOrEqual(t, relDiffBps(gotRes[0], wantRes[0]), int64(5), "stable reserve drift: got %s want %s", gotRes[0], wantRes[0])
-	require.LessOrEqual(t, relDiffBps(gotRes[1], wantRes[1]), int64(5), "volatile reserve drift: got %s want %s", gotRes[1], wantRes[1])
-	// What that lot difference is WORTH. The reserves and kappa carry it, but a quote
-	// reads them only through price impact, which is second order — so a book 2 bps deep
-	// in the wrong place does not move a quote by 2 bps. Measured against the chain across the size
-	// range, including an input equal to the whole stable leg (where the solvency clamp
-	// binds and the drift scales it directly), the error stays inside a bp. It is on the
-	// optimistic side, so it spends slippage budget rather than being free; this bounds how
-	// much. A regression that turned the structural sliver into a real mispricing would
-	// show up here rather than in the reserve figures, which is why it is asserted.
-	for _, frac := range []int64{1000, 100, 10, 4, 2, 1} {
-		amt := new(big.Int).Div(wantRes[0], big.NewInt(frac))
-		if amt.Sign() == 0 {
-			continue
-		}
-		quoteOut := func(s *everlongcvamm.PoolSimulator) (out, used *big.Int) {
-			r, err := s.CalcAmountOut(pool.CalcAmountOutParams{
-				TokenAmountIn: pool.TokenAmount{Token: s.Info.Tokens[0], Amount: amt},
-				TokenOut:      s.Info.Tokens[1]})
-			if err != nil {
-				return nil, nil
-			}
-			return r.TokenAmountOut.Amount, new(big.Int).Sub(amt, r.RemainingTokenAmountIn.Amount)
-		}
-		pushedOut, pushedUsed := quoteOut(base)
-		chainOut, chainUsed := quoteOut(truth)
-		if pushedOut == nil || chainOut == nil {
-			continue
-		}
-		errPpm := new(big.Int).Div(
-			new(big.Int).Mul(new(big.Int).Sub(pushedOut, chainOut), big.NewInt(1_000_000)), chainOut)
-		t.Logf("quote at 1/%d of the book: pushed vs chain %s ppm (%s vs %s, consumed %s vs %s)",
-			frac, errPpm, pushedOut, chainOut, pushedUsed, chainUsed)
-		require.LessOrEqual(t, errPpm.Int64(), int64(200),
-			"a chained quote at 1/%d of the book overstates the chain by %s ppm", frac, errPpm)
-	}
-
-	require.LessOrEqual(t, relDiffBps(base.Extra.Kappa.ToBig(), truth.Extra.Kappa.ToBig()), int64(2),
-		"kappa drift: got %s want %s", base.Extra.Kappa, truth.Extra.Kappa)
-	t.Logf("pushed base vs chain @%s: x exact, reserves within %d/%d bps, kappa within %d bps",
-		receipt.BlockNumber, relDiffBps(gotRes[0], wantRes[0]), relDiffBps(gotRes[1], wantRes[1]),
-		relDiffBps(base.Extra.Kappa.ToBig(), truth.Extra.Kappa.ToBig()))
+	postAlmSupply := new(big.Int).Add(coupled.Extra.AlmSupply, minted)
+	postAlmSupply.Sub(postAlmSupply, soldBack)
+	require.Zero(t, postAlmSupply.Cmp(postRd.almSupply), "ALM supply")
+	postRvps, ok := base.ReservationValuePerShareWad(coupled.Extra.AlmResvPriceWad, postAlmSupply)
+	require.True(t, ok)
+	require.Zero(t, postRvps.Cmp(postRd.rvpsWad), "reservationValuePerShareWad")
+	require.Zero(t, base.GetTotalReserves()[0].Cmp(postRd.refReserves.StableReserve), "reference stable reserve")
+	require.Zero(t, base.GetTotalReserves()[1].Cmp(postRd.refReserves.AssetReserve), "reference volatile reserve")
+	postReservation := reservationValueAt(postRd.exchangeState.Collateral, postRd.cvTotalAssets,
+		postRd.cvTotalSupply, se.CvDecimalsOffset, postRvps)
+	require.Zero(t, postReservation.Cmp(postRd.exchangeState.PriceWad), "CollateralRebalancer reservation value")
+	_, _, _, _, moved := coupled.baseDeltas()
+	require.False(t, moved, "the exact reverse push must advance both baselines")
 }
 
 // TestCloneIsolatesBasePool: this pool's UpdateBalance pushes the fill into the base

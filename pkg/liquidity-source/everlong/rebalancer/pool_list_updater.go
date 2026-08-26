@@ -9,6 +9,7 @@ import (
 	"github.com/KyberNetwork/ethrpc"
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/goccy/go-json"
 
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/entity"
@@ -34,6 +35,11 @@ type Metadata struct {
 	// upgrade changes the executable math even when the swapper and managed vault stay
 	// put, so it must produce a replacement pool with freshly-attested StaticExtra.
 	Implementation string `json:"implementation"`
+	// Version the listing-time wrapper attestation. Metadata written before this field
+	// existed must relist once so persisted StaticExtra gains ALMAdapterCodeHash; without
+	// this cursor word the stricter meta factory would correctly reject the old pool but
+	// the updater would never replace it.
+	ALMAdapterCodeHash string `json:"almCodeHash,omitempty"`
 }
 
 var _ = poollist.RegisterFactoryCE(DexType, NewPoolsListUpdater)
@@ -118,6 +124,20 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 	if resp.BlockNumber != nil {
 		blockNumber = resp.BlockNumber.Uint64()
 	}
+	// ClammAlmAdapter is not a proxy, and the swapper stores its address immutably. Pin
+	// its exact runtime nevertheless: the wrapper's bucket/ratio floors are part of the
+	// quoted formula, and selector compatibility alone cannot prove those semantics.
+	var listingBlock *big.Int
+	if resp.BlockNumber != nil {
+		listingBlock = new(big.Int).Set(resp.BlockNumber)
+	}
+	adapterCode, err := u.ethrpcClient.GetETHClient().CodeAt(ctx, alm, listingBlock)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !strings.EqualFold(crypto.Keccak256Hash(adapterCode).Hex(), supportedAlmAdapterCodeHash) {
+		return nil, nil, ErrUnsupportedAdapter
+	}
 
 	underlyingCvamm, err := u.resolveUnderlyingCvamm(ctx, alm)
 	if err != nil {
@@ -169,9 +189,11 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 	}
 
 	// Nothing rotates more quietly than the settlement swapper, and it IS the pool
-	// address. The managed vault changes the state key and the implementation changes the
-	// linked pricing code, so either one must emit a freshly-attested replacement too.
-	if metadata.matches(swapper, managedVault, implementation) {
+	// address. The managed vault changes the state key, the implementation changes the
+	// linked pricing code, and the wrapper hash versions its executable semantics; any
+	// change must emit a freshly-attested replacement.
+	if metadata.matches(swapper, managedVault, implementation) &&
+		strings.EqualFold(metadata.ALMAdapterCodeHash, supportedAlmAdapterCodeHash) {
 		return nil, metadataBytes, nil
 	}
 
@@ -198,6 +220,7 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		Swapper:             hexutil.Encode(swapper[:]),
 		CollVault:           hexutil.Encode(collVault[:]),
 		ALM:                 hexutil.Encode(alm[:]),
+		ALMAdapterCodeHash:  supportedAlmAdapterCodeHash,
 		UnderlyingCvamm:     underlyingCvamm,
 		CvDecimalsOffset:    18 - assetDecimals,
 		Math:                strings.ToLower(u.config.Math),
@@ -218,9 +241,10 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 	}
 
 	newMetadata, err := json.Marshal(Metadata{
-		Swapper:        hexutil.Encode(swapper[:]),
-		ManagedVault:   hexutil.Encode(managedVault[:]),
-		Implementation: hexutil.Encode(implementation[:]),
+		Swapper:            hexutil.Encode(swapper[:]),
+		ManagedVault:       hexutil.Encode(managedVault[:]),
+		Implementation:     hexutil.Encode(implementation[:]),
+		ALMAdapterCodeHash: supportedAlmAdapterCodeHash,
 	})
 	if err != nil {
 		return nil, nil, err

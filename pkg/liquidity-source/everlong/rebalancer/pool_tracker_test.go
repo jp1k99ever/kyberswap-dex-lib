@@ -11,6 +11,7 @@ import (
 	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/require"
 
+	everlongcvamm "github.com/KyberNetwork/kyberswap-dex-lib/pkg/liquidity-source/everlong/cvamm"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/test"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
@@ -74,7 +75,18 @@ func TestLiveListTrackQuote(t *testing.T) {
 
 	p.Tokens[0].Decimals = 18
 	p.Tokens[1].Decimals = 8
-	sim, err := NewPoolSimulator(p)
+	cvCfg := &everlongcvamm.Config{DexID: everlongcvamm.DexType,
+		ALMs: []everlongcvamm.ALMConfig{{Address: staticExtra.UnderlyingCvamm}}}
+	cvPools, _, err := everlongcvamm.NewPoolsListUpdater(cvCfg, client).GetNewPools(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, cvPools, 1)
+	cvTracked, err := everlongcvamm.NewPoolTracker(cvCfg, client).GetNewPoolState(
+		context.Background(), cvPools[0], pool.GetNewPoolStateParams{})
+	require.NoError(t, err)
+	base, err := everlongcvamm.NewPoolSimulator(cvTracked)
+	require.NoError(t, err)
+	sim, err := NewPoolSimulatorWithBases(p,
+		map[string]pool.IPoolSimulator{staticExtra.UnderlyingCvamm: base})
 	require.NoError(t, err)
 
 	nect, wbtc := p.Tokens[0].Address, p.Tokens[1].Address

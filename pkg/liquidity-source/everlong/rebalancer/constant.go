@@ -9,6 +9,11 @@ import (
 
 const (
 	DexType = "everlong-rebalancer"
+	// Runtime hash of the verified, non-proxy ClammAlmAdapter deployed at
+	// 0xbD10884d6b55EDa1d872cd5108B8aAbdC0C3F6ca on Berachain. Its wrapper
+	// rounding is part of the reservation-value formula, so another implementation is
+	// not compatible merely because it exposes the same selectors.
+	supportedAlmAdapterCodeHash = "0xc300573eb8b49ef3a934e5ce4a47d18436da1b75e037fbd4299b38a4a7b5d182"
 
 	rebalancerMethodCollVault         = "collVault"
 	rebalancerMethodPhysicalCrFloor   = "PHYSICAL_CR_FLOOR_WAD"
@@ -90,7 +95,11 @@ var (
 	ErrNoCurveParams       = errors.New("no curve params for this chain — the deployed rebalancer's constants are required")
 	ErrInvalidCurveParams  = errors.New("invalid curve params")
 	ErrUnderlyingCvamm     = errors.New("adapter alm() did not resolve the underlying CvammALM")
+	ErrUnsupportedAdapter  = errors.New("unsupported ALM adapter runtime code")
 	ErrMissingBasePool     = errors.New("underlying everlong-cvamm base pool absent — refusing an uncoupled simulator")
+	ErrInexactBasePool     = errors.New("underlying everlong-cvamm base pool cannot replay liquidity changes exactly")
+	ErrInexactCoupledState = errors.New("coupled state is not execution-exact")
+	ErrUnattestedReference = errors.New("the ALM reference-oracle gate is no longer attested after a base price move")
 	ErrMathNotConfigured   = errors.New("config.Math is unset, not an address, or does not answer deleverageQuote")
 	ErrInvalidSnapshotWord = errors.New("invalid snapshot value")
 	ErrVenueGateClosed     = errors.New("the venue would revert this direction")

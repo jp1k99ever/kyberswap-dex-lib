@@ -6,9 +6,11 @@ import (
 	"testing"
 
 	"github.com/goccy/go-json"
+	"github.com/holiman/uint256"
 	"github.com/stretchr/testify/require"
 
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/entity"
+	everlongcvamm "github.com/KyberNetwork/kyberswap-dex-lib/pkg/liquidity-source/everlong/cvamm"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
 )
 
@@ -90,22 +92,31 @@ func vaultStateFromFixture(t *testing.T, f fixture) *VaultState {
 	}
 }
 
-func newTestPoolSimulator(t *testing.T) *PoolSimulator {
+func newTestPoolEntity(t *testing.T) entity.Pool {
 	f := loadFixture(t)
 	state := vaultStateFromFixture(t, f)
+	// Same-block words omitted by the original arithmetic-only fixture. They are now
+	// mandatory because a routable simulator must attest the underlying CVAMM book and
+	// replay the wrapper RVPS rather than fall back to the pre-fill reservation.
+	state.AlmIdleStable = bi(t, "400170421078105")
+	state.AlmIdleVolatile = bi(t, "22")
+	state.RvpsWad = bi(t, "50542765636070561249556032")
+	state.AlmResvPriceWad = bi(t, "638569604086845466156025208308271")
 	extraBytes, err := json.Marshal(state)
 	require.NoError(t, err)
 	staticExtraBytes, err := json.Marshal(StaticExtra{
-		Rebalancer:       "0xa6b848d899189d263a9398f1df4534af7b06d6b3",
-		Swapper:          "0x27775ec38e2b394738b73c0d25f63e20063df054",
-		CollVault:        "0x9e7f375c351a251e80eb89ad33ca62b270fd9b4a",
-		ALM:              "0xbd10884d6b55eda1d872cd5108b8aabdc0c3f6ca",
-		CvDecimalsOffset: f.CvDecimalsOffset,
-		CurveParams:      berachainCurveParams(),
+		Rebalancer:         "0xa6b848d899189d263a9398f1df4534af7b06d6b3",
+		Swapper:            "0x27775ec38e2b394738b73c0d25f63e20063df054",
+		CollVault:          "0x9e7f375c351a251e80eb89ad33ca62b270fd9b4a",
+		ALM:                "0xbd10884d6b55eda1d872cd5108b8aabdc0c3f6ca",
+		ALMAdapterCodeHash: supportedAlmAdapterCodeHash,
+		UnderlyingCvamm:    "0xf5124f5605ce1e91a7429b837b7dac8f9e5378dd",
+		CvDecimalsOffset:   f.CvDecimalsOffset,
+		CurveParams:        berachainCurveParams(),
 	})
 	require.NoError(t, err)
 
-	sim, err := NewPoolSimulator(entity.Pool{
+	return entity.Pool{
 		Address:  "0x27775ec38e2b394738b73c0d25f63e20063df054",
 		Exchange: "everlong-rebalancer",
 		Type:     DexType,
@@ -116,7 +127,40 @@ func newTestPoolSimulator(t *testing.T) *PoolSimulator {
 		Reserves:    entity.PoolReserves{f.AlmStableReserve, f.AlmVolatileReserve},
 		Extra:       string(extraBytes),
 		StaticExtra: string(staticExtraBytes),
+	}
+}
+
+func newTestPoolSimulator(t *testing.T) *PoolSimulator {
+	p := newTestPoolEntity(t)
+	baseExtra, err := json.Marshal(everlongcvamm.Extra{
+		Support: everlongcvamm.Support{
+			AWad: uint256.MustFromDecimal("34000000000000000000"),
+			XLo:  uint256.MustFromDecimal("31865306097213932"),
+			XHi:  uint256.MustFromDecimal("1099912607172170593"),
+			YHi:  uint256.MustFromDecimal("24096289941794300"),
+		},
+		XWad:                uint256.MustFromDecimal("498580384806401754"),
+		AnchorSqrtX96:       uint256.MustFromDecimal("2002090499947173553980875996007816177"),
+		Kappa:               uint256.MustFromDecimal("22849333026605"),
+		FeeStableInWad:      uint256.MustFromDecimal("20962195950181662"),
+		FeeVolatileInWad:    uint256.MustFromDecimal("13974797300121108"),
+		IdleStable:          uint256.MustFromDecimal("400170421078105"),
+		IdleVolatile:        uint256.MustFromDecimal("22"),
+		ReservationPriceWad: uint256.MustFromDecimal("638569604086845466156025208308271"),
 	})
+	require.NoError(t, err)
+	base, err := everlongcvamm.NewPoolSimulator(entity.Pool{
+		Address:     "0xf5124f5605ce1e91a7429b837b7dac8f9e5378dd",
+		Exchange:    everlongcvamm.DexType,
+		Type:        everlongcvamm.DexType,
+		Tokens:      p.Tokens,
+		Reserves:    entity.PoolReserves{"275607106040001229469", "422007"},
+		Extra:       string(baseExtra),
+		StaticExtra: "{}",
+	})
+	require.NoError(t, err)
+
+	sim, err := NewPoolSimulatorWithBases(p, map[string]pool.IPoolSimulator{base.GetAddress(): base})
 	require.NoError(t, err)
 	return sim
 }

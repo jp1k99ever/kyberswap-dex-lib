@@ -14,10 +14,15 @@ type StaticExtra struct {
 	// what lets them be read in the SAME round as everything else — a second round could
 	// not run on the batched path, which left that path without a fee law at all. The
 	// refresh re-reads feeHook() and skips the terms if it has moved.
-	FeeHook       string `json:"feeHook,omitempty"`
-	Adapter       string `json:"adapter,omitempty"`
-	GasStableIn   int64  `json:"gasSIn,omitempty"`
-	GasVolatileIn int64  `json:"gasVIn,omitempty"`
+	FeeHook string `json:"feeHook,omitempty"`
+	// Implementation pins the EIP-1967 implementation whose storage layout and fee
+	// law this integration mirrors. The tracker re-reads the slot at the snapshot block
+	// before it consumes the layout-bound realized-variance word.
+	Implementation         string `json:"impl,omitempty"`
+	ImplementationCodeHash string `json:"implCodeHash,omitempty"`
+	Adapter                string `json:"adapter,omitempty"`
+	GasStableIn            int64  `json:"gasSIn,omitempty"`
+	GasVolatileIn          int64  `json:"gasVIn,omitempty"`
 }
 
 // Support is the funded band from getSupport(): anchor-free, invalidated only by a
@@ -35,8 +40,9 @@ type Support struct {
 // ALM pinned at one block. XWad is the AUTHORITATIVE inventory coordinate (the price is
 // a lossy floored sqrt of it and is deliberately not stored). Reserves are the accounted
 // tradeable reserves (idle excluded) — authoritative for the solvency clamp. The
-// directional fees are READ, never computed: their realized-variance input has no getter
-// and no event on-chain.
+// directional fees are read for the first quote. RealizedVarianceWad is read directly
+// from the implementation-pinned ERC-7201 slot so subsequent quotes can reconstruct
+// the fee exactly; it is deliberately absent for state-override snapshots.
 type Extra struct {
 	Support          Support      `json:"sup"`
 	XWad             *uint256.Int `json:"x"`
@@ -44,41 +50,40 @@ type Extra struct {
 	Kappa            *uint256.Int `json:"kappa"`
 	FeeStableInWad   *uint256.Int `json:"feeS"`
 	FeeVolatileInWad *uint256.Int `json:"feeV"`
+	FeeHookActive    bool         `json:"dynamicFee,omitempty"`
 	Paused           bool         `json:"paused,omitempty"`
 	// The ALM's idle balances: the part of getTotalAmounts held off the curve. Deposits
 	// take a pro-rata slice of them and withdrawals release one, each floored on its own,
-	// which is what makes a coupled mint/burn reproducible to the wei. nil leaves the
-	// coupling on its scale-factor approximation.
+	// which is what makes a coupled mint/burn reproducible to the wei. nil disables
+	// reverse coupling because the bucket split cannot be inferred exactly.
 	IdleStable   *uint256.Int `json:"idleS,omitempty"`
 	IdleVolatile *uint256.Int `json:"idleV,omitempty"`
 
-	// Fee-law terms needed to re-derive the fee after a fill — see fee_law_exact.go for
-	// the law and fee_law.go for the saturated bound behind it. nil disables both and
-	// leaves the conservative fold.
+	// Fee-law terms needed to re-derive the fee after a fill. Missing terms disable a
+	// chained quote; there is no inferred-scalar or conservative-bound fallback.
 	MidFeeWad           *uint256.Int `json:"midFee,omitempty"`
 	DirSkewWad          *uint256.Int `json:"dirSkew,omitempty"`
 	InvSkewKappaWad     *uint256.Int `json:"invK,omitempty"`
 	InvSkewBandWad      *uint256.Int `json:"invBand,omitempty"`
 	ReservationPriceWad *uint256.Int `json:"resvP,omitempty"`
-	// Hook floor at the LIVE push rate (ffadState().rateWad run through the hook's own
-	// smoothstep, off its public FFAD constants), which makes max(law, floor) exact. When
-	// those constants do not decode (another hook build) this falls back to the floor at
-	// a SATURATED push rate — an upper bound on the live floor, so a re-derived fee below
-	// it declines rather than over-quotes.
+	// Hook floor at the LIVE push rate (ffadState().rateWad run through the hook's public
+	// FFAD constants). HotFloorsExact distinguishes these exact words from the saturated
+	// probes retained only for snapshot diagnostics.
 	FloorStableInWad   *uint256.Int `json:"floorS,omitempty"`
 	FloorVolatileInWad *uint256.Int `json:"floorV,omitempty"`
+	HotFloorsExact     bool         `json:"floorExact,omitempty"`
 	// Zero curvature selects the law's scalar branch, where the fee is LpFee regardless
 	// of the multiplier.
 	CurvatureWad *uint256.Int `json:"curv,omitempty"`
 	LpFeeWad     *uint256.Int `json:"lpFee,omitempty"`
-	// The remaining terms of the exact law. `rv` is NOT among them — it has no getter, and
-	// it reaches the fee only through a scalar a swap cannot move, so it is solved from the
-	// sampled fee rather than read.
-	OutFeeWad      *uint256.Int `json:"outFee,omitempty"`
-	VolSigmaRefWad *uint256.Int `json:"sigmaRef,omitempty"`
-	VolBetaWad     *uint256.Int `json:"volBeta,omitempty"`
-	VolMinWad      *uint256.Int `json:"volMin,omitempty"`
-	VolMaxWad      *uint256.Int `json:"volMax,omitempty"`
+	// The remaining terms of the exact law. RealizedVarianceWad is the layout-bound
+	// CvammStore.rv word read at the same block as this snapshot.
+	OutFeeWad           *uint256.Int `json:"outFee,omitempty"`
+	VolSigmaRefWad      *uint256.Int `json:"sigmaRef,omitempty"`
+	VolBetaWad          *uint256.Int `json:"volBeta,omitempty"`
+	VolMinWad           *uint256.Int `json:"volMin,omitempty"`
+	VolMaxWad           *uint256.Int `json:"volMax,omitempty"`
+	RealizedVarianceWad *uint256.Int `json:"rv,omitempty"`
 }
 
 // supportRaw is the ethrpc decode target for getSupport() (tuple field order = ABI order).

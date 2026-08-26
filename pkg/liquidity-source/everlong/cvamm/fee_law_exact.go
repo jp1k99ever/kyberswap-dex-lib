@@ -6,17 +6,13 @@ import (
 	"github.com/holiman/uint256"
 )
 
-// Exact port of CvammFeeLib for the UNSATURATED regime. The bound in fee_law.go is safe but
-// conservative: off the cap it substitutes MidFee for a base the venue prices lower, which
-// understates a revisit by the whole gap (58-59 bps measured).
-//
-// The law's one unobservable input is `rv` (realized variance) — no getter on the ALM. But it
-// reaches the fee ONLY through sigma/sigmaRef, a scalar a swap does not move, so it never has
-// to be read: it is SOLVED from the fee the tracker already samples each block, then reused at
-// the post-fill state where everything else (reserves, spot, dislocation) is known.
+// Exact port of CvammFeeLib. The deployed implementation has no realizedVariance()
+// getter, so the tracker reads CvammStore.rv from its implementation-pinned ERC-7201
+// slot at the snapshot block. No fee input is inferred from sampled output: the sampled
+// directional fees are used only as a parity attestation before a chained quote is
+// enabled.
 
 var (
-	bigOne   = big.NewInt(1)
 	bigQ192  = new(big.Int).Lsh(big.NewInt(1), 192)
 	bigWadSq = new(big.Int).Mul(bigWadFee, bigWadFee)
 )
@@ -257,211 +253,88 @@ func (c *feeCtx) raw(e *Extra, sWad *big.Int, stableIn bool) *big.Int {
 	return f
 }
 
-// maxFactor returns the largest a with floor(a*mul/div) <= limit — the inverse of one
-// floored multiply. nil means the step imposes no bound at all.
-func maxFactor(limit, mul, div *big.Int) *big.Int {
-	if mul.Sign() == 0 {
+// realizedVarianceScalar is Solidity's
+// Math.mulDiv(Math.sqrt(rv) * 1e9, WAD, sigmaRef). The intermediate fits uint256
+// because sqrt(uint256.max) * 1e9 is below 2^158.
+func realizedVarianceScalar(e *Extra) *big.Int {
+	if e.RealizedVarianceWad == nil || e.VolSigmaRefWad == nil {
 		return nil
 	}
-	n := new(big.Int).Mul(new(big.Int).Add(limit, bigOne), div)
-	return n.Quo(n.Sub(n, bigOne), mul)
+	if e.VolSigmaRefWad.IsZero() {
+		return new(big.Int).Set(bigWadFee) // raw() disables the vol term on this branch
+	}
+	sigma := new(big.Int).Sqrt(e.RealizedVarianceWad.ToBig())
+	sigma.Mul(sigma, big.NewInt(1_000_000_000))
+	return mulDivFloor(sigma, bigWadFee, e.VolSigmaRefWad.ToBig())
 }
 
-// solveVolScalar returns the largest vol scalar that both sampled fees admit.
-//
-// The scalar is sigma/sigmaRef, which a swap cannot move, so the value solved here at the
-// pre-fill book is still the venue's at the post-fill one. It is an UPPER bound rather
-// than the exact value because the hook floor only ever raises a fee: the true scalar
-// always satisfies raw <= sampled, and this returns the largest scalar that still does.
-// The fee is monotone in it, so pricing the fill with it cannot under-quote.
-//
-// The law is a chain of floored multiplies, so it inverts step by step rather than by
-// search. The result is then confirmed to be exactly maximal — anything else means the
-// inversion and the forward law disagree, and the caller must fall back.
-func solveVolScalar(e *Extra, c *feeCtx) (*big.Int, bool) {
-	fits := func(s *big.Int) bool {
-		return c.raw(e, s, true).Cmp(e.FeeStableInWad.ToBig()) <= 0 &&
-			c.raw(e, s, false).Cmp(e.FeeVolatileInWad.ToBig()) <= 0
+// applyExactFloor mirrors CvammFeeLib._applyHotFloor. A malformed floor above WAD is
+// ignored by the contract rather than capped.
+func applyExactFloor(raw *big.Int, floor *uint256.Int) *big.Int {
+	out := new(big.Int).Set(raw)
+	if floor == nil {
+		return out
 	}
-	unbounded := e.VolMaxWad.ToBig()
-	if c.scalar != nil || e.VolSigmaRefWad.Sign() == 0 {
-		// The fee does not depend on the scalar here, so the samples say nothing about it.
-		return unbounded, fits(unbounded)
+	f := floor.ToBig()
+	if f.Cmp(bigWadFee) <= 0 && f.Cmp(out) > 0 {
+		out.Set(f)
 	}
-
-	// Back through the directional multiplier, taking the tighter of the two legs.
-	var baseHi *big.Int
-	for _, d := range []struct {
-		mult    *big.Int
-		sampled *uint256.Int
-	}{{c.multStableIn, e.FeeStableInWad}, {c.multVolIn, e.FeeVolatileInWad}} {
-		sampled := d.sampled.ToBig()
-		if sampled.Cmp(bigWadFee) >= 0 {
-			continue // the law caps at WAD, so this leg admits any base
-		}
-		if b := maxFactor(sampled, d.mult, bigWadFee); b != nil && (baseHi == nil || b.Cmp(baseHi) < 0) {
-			baseHi = b
-		}
-	}
-
-	hi := unbounded
-	outFee, midFee := e.OutFeeWad.ToBig(), e.MidFeeWad.ToBig()
-	if baseHi != nil && baseHi.Cmp(midFee) < 0 {
-		if baseHi.Cmp(outFee) < 0 {
-			return nil, false // below the law's own floor at every scalar
-		}
-		// Back through the interpolation, the reduction coefficient, and the boost.
-		v := maxFactor(new(big.Int).Sub(baseHi, outFee), new(big.Int).Sub(midFee, outFee), bigWadFee)
-		if v != nil {
-			v = maxFactor(v, c.g, bigWadFee)
-		}
-		if v != nil && v.Cmp(e.VolMaxWad.ToBig()) < 0 {
-			if v.Cmp(e.VolMinWad.ToBig()) < 0 {
-				return nil, false // the clamp holds the multiplier above this
-			}
-			if s := maxFactor(v, c.boost, bigWadFee); s != nil && s.Cmp(hi) < 0 {
-				hi = s
-			}
-		}
-	}
-
-	// Maximal by construction; confirmed so an inversion that disagrees with the forward
-	// law declines instead of pricing off a scalar on either side of the truth.
-	if !fits(hi) || (hi.Cmp(unbounded) < 0 && fits(new(big.Int).Add(hi, bigOne))) {
-		return nil, false
-	}
-	return hi, true
+	return out
 }
 
-// feeSolve is what the re-derivation must not recompute per hop: the vol scalar, which a
-// swap cannot move, and the block's OWN sampled fees, which bound the hook floor the law
-// never gets to read. Solving again from an already re-derived fee would ratchet the
-// haircut up hop over hop instead of repricing from the venue.
-type feeSolve struct {
-	tried  bool
-	scalar *big.Int
-	// Per-direction upper bounds on the hook floor, fixed at solve time — see floorUpperBound.
-	floorS, floorV *big.Int
-}
-
-// solve brackets the scalar once, from the state the snapshot was read at.
-func (f *feeSolve) solve(e *Extra, x, reserveStable, reserveVolatile *big.Int) bool {
-	if f.tried {
-		return f.scalar != nil
-	}
-	f.tried = true
-	if !e.feeLawExactTracked() {
-		return false
-	}
-	c := newFeeCtx(e, x, reserveStable, reserveVolatile)
-	if c == nil {
-		return false
-	}
-	s, ok := solveVolScalar(e, c)
-	if !ok {
-		return false
-	}
-	f.scalar = s
-	f.floorS = floorUpperBound(e, c.raw(e, s, true), e.FeeStableInWad.ToBig(), true)
-	f.floorV = floorUpperBound(e, c.raw(e, s, false), e.FeeVolatileInWad.ToBig(), false)
-	return true
-}
-
-// floorUpperBound bounds the hook floor for one direction, from above, at the state the
-// snapshot was read at.
-//
-// The floor depends on the direction and the decayed push rate, neither of which a fill
-// touches, so the bound still holds after one. Two things constrain it. The sampled fee is
-// max(law, floor): when it sits ABOVE what the law produces, the floor is what raised it
-// and the sample IS the floor exactly; otherwise the floor merely sits at or below the
-// law's own output. The floor word is the hook's floor at the LIVE push rate when the
-// tracker could compute it (then this bound is exact), else the floor at a SATURATED
-// push rate — its ceiling outright, since the hook ramps it monotonically
-// (`level * smoothstep(t)`) and clamps at that level.
-//
-// Taking the tighter of the two is what keeps a direction REVERSAL exact. The pre-fill
-// sample for the reversing leg is high for a directional reason, not a floor one, so
-// carrying it forward would re-impose the fee the fill just moved away from.
-func floorUpperBound(e *Extra, rawPre, sampled *big.Int, stableIn bool) *big.Int {
-	if sampled.Cmp(rawPre) > 0 {
-		return new(big.Int).Set(sampled)
-	}
-	ub := new(big.Int).Set(rawPre)
-	f := e.FloorVolatileInWad
-	if stableIn {
-		f = e.FloorStableInWad
-	}
-	// A floor word that did not decode leaves only the sample-derived bound.
-	if f != nil && f.ToBig().Cmp(ub) < 0 {
-		ub = f.ToBig()
-	}
-	return ub
-}
-
-// reSampleFeesExact reprices both legs at the post-fill book through the full law.
-//
-// The hook floor needs no second round of calls: floorUpperBound pins it from the sample
-// and the floor word the tracker already carries (the live-rate floor when computable,
-// else the saturated-rate ceiling).
-//
-// swap() itself folds nothing: `rv` and the FFAD push rate move only through the
-// permissionless poke() and the keeper's recenter(), so the sampled fee is exact for the
-// snapshot block and goes stale only if one of those lands first. Both hops of a route
-// inherit the same staleness, which is what the snapshot already assumes everywhere else.
-func reSampleFeesExact(e *Extra, f *feeSolve, preX, preStable, preVolatile,
-	postX, postStable, postVolatile *big.Int) (newStableIn, newVolatileIn *big.Int, ok bool) {
-	if !f.solve(e, preX, preStable, preVolatile) {
-		return nil, nil, false
-	}
-	postCtx := newFeeCtx(e, postX, postStable, postVolatile)
-	if postCtx == nil {
-		return nil, nil, false
-	}
-	atLeastFloor := func(raw, floor *big.Int) *big.Int {
-		if raw.Cmp(floor) < 0 {
-			return new(big.Int).Set(floor)
-		}
-		return new(big.Int).Set(raw)
-	}
-	return atLeastFloor(postCtx.raw(e, f.scalar, true), f.floorS),
-		atLeastFloor(postCtx.raw(e, f.scalar, false), f.floorV), true
-}
-
-// feeLawExactTracked reports whether the snapshot carries every term the exact law reads.
+// feeLawExactTracked reports whether the snapshot carries every input used by the
+// deployed dynamic fee law. The zero-curvature branch needs only lpFee and the exact
+// live floors; every other branch carries the full set so a liquidity move cannot
+// switch from a degenerate shortcut into an untracked branch.
 func (e *Extra) feeLawExactTracked() bool {
-	return e.feeLawTracked() && e.CurvatureWad != nil && e.OutFeeWad != nil &&
-		e.VolSigmaRefWad != nil && e.VolBetaWad != nil &&
-		e.VolMinWad != nil && e.VolMaxWad != nil && e.VolMaxWad.Sign() > 0 &&
+	if !e.FeeHookActive || !e.HotFloorsExact || e.CurvatureWad == nil || e.LpFeeWad == nil ||
+		e.FloorStableInWad == nil || e.FloorVolatileInWad == nil ||
+		e.FeeStableInWad == nil || e.FeeVolatileInWad == nil {
+		return false
+	}
+	if e.CurvatureWad.IsZero() {
+		return true
+	}
+	return e.MidFeeWad != nil && e.DirSkewWad != nil && e.InvSkewKappaWad != nil &&
+		e.InvSkewBandWad != nil && e.ReservationPriceWad != nil &&
+		e.ReservationPriceWad.Sign() > 0 && e.OutFeeWad != nil &&
+		e.VolSigmaRefWad != nil && e.VolBetaWad != nil && e.VolMinWad != nil &&
+		e.VolMaxWad != nil && e.VolMaxWad.Sign() > 0 && e.RealizedVarianceWad != nil &&
 		e.Support.AWad != nil && e.AnchorSqrtX96 != nil && e.AnchorSqrtX96.Sign() > 0 &&
-		e.FeeStableInWad != nil && e.FeeVolatileInWad != nil &&
 		!e.MidFeeWad.Lt(e.OutFeeWad)
 }
 
-// reSampleFeesBest takes the tighter of the two re-derivations.
-//
-// Both bound the post-fill fee from above, so the smaller is the better quote and is
-// still safe. The exact law wins wherever the base is off its cap — the case the bound
-// alone prices as MidFee, which measured 58-59 bps too wide on a revisit. The bound wins
-// where the exact law declines: a snapshot predating the extra hook terms, a hook
-// upgrade, or a book the modelled law does not reproduce.
-func reSampleFeesBest(e *Extra, f *feeSolve, preX, preStable, preVolatile,
-	postX, postStable, postVolatile *big.Int) (newStableIn, newVolatileIn *big.Int, ok bool) {
-	xs, xv, xok := reSampleFeesExact(e, f, preX, preStable, preVolatile, postX, postStable, postVolatile)
-	bs, bv, bok := reSampleFees(e, preX, preStable, preVolatile, postX, postStable, postVolatile)
-	switch {
-	case xok && bok:
-		return bigMin(xs, bs), bigMin(xv, bv), true
-	case xok:
-		return xs, xv, true
-	case bok:
-		return bs, bv, true
+func exactFeesAt(e *Extra, x, reserveStable, reserveVolatile *big.Int) (
+	stableIn, volatileIn *big.Int, ok bool) {
+	if !e.feeLawExactTracked() {
+		return nil, nil, false
 	}
-	return nil, nil, false
+	c := newFeeCtx(e, x, reserveStable, reserveVolatile)
+	if c == nil {
+		return nil, nil, false
+	}
+	scalar := realizedVarianceScalar(e)
+	if c.scalar == nil && scalar == nil {
+		return nil, nil, false
+	}
+	// The scalar is ignored by raw() on the zero-curvature and degenerate branches.
+	if scalar == nil {
+		scalar = new(big.Int)
+	}
+	return applyExactFloor(c.raw(e, scalar, true), e.FloorStableInWad),
+		applyExactFloor(c.raw(e, scalar, false), e.FloorVolatileInWad), true
 }
 
-func bigMin(a, b *big.Int) *big.Int {
-	if a.Cmp(b) <= 0 {
-		return a
+// reSampleFeesExact first proves that the layout-read rv and all ported hook terms
+// reproduce BOTH fees sampled from the contract at the pre-move book. Only then does it
+// publish fees for the post-move book. A mismatch is not bounded or approximated: the
+// caller disables any chained quote from that state.
+func reSampleFeesExact(e *Extra, preX, preStable, preVolatile,
+	postX, postStable, postVolatile *big.Int) (newStableIn, newVolatileIn *big.Int, ok bool) {
+	preS, preV, ok := exactFeesAt(e, preX, preStable, preVolatile)
+	if !ok || preS.Cmp(e.FeeStableInWad.ToBig()) != 0 ||
+		preV.Cmp(e.FeeVolatileInWad.ToBig()) != 0 {
+		return nil, nil, false
 	}
-	return b
+	return exactFeesAt(e, postX, postStable, postVolatile)
 }

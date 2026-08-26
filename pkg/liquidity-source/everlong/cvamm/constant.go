@@ -34,11 +34,6 @@ const (
 	hookMethodVolBeta           = "volBetaWad"
 	hookMethodVolMin            = "volMinWad"
 	hookMethodVolMax            = "volMaxWad"
-	hookMethodFfadEnabled       = "ffadEnabled"
-	hookMethodFfadRefRate       = "FFAD_REFERENCE_RATE_WAD"
-	hookMethodFfadSatRate       = "FFAD_SATURATION_RATE_WAD"
-	hookMethodFfadStableFloor   = "FFAD_STABLE_IN_FLOOR_WAD"
-	hookMethodFfadVolatileFloor = "FFAD_VOLATILE_IN_FLOOR_WAD"
 )
 
 // Default gas per direction, MEASURED THROUGH THE ADAPTER against the deployed
@@ -55,14 +50,20 @@ const (
 )
 
 var (
-	ErrExactOutNotSupported = errors.New("exact-output swaps are not supported (the fee is an output haircut; the curve solves forward only)")
-	ErrInvalidToken         = errors.New("invalid token")
-	ErrPaused               = errors.New("venue is paused")
-	ErrRetractedBook        = errors.New("book is retracted (kappa == 0) or has no anchor")
-	ErrCurveDomain          = errors.New("coordinate outside the curve domain")
-	ErrCurveAmplification   = errors.New("amplification outside (WAD/2, 1000*WAD]")
-	ErrSwapExhausted        = errors.New("nothing fills (input below normalized resolution or support exhausted)")
-	ErrZeroAmountOut        = errors.New("zero amount out")
-	ErrInvalidFee           = errors.New("directional fee at or above 100%")
-	ErrOverflow             = errors.New("amount overflow")
+	ErrExactOutNotSupported      = errors.New("exact-output swaps are not supported (the fee is an output haircut; the curve solves forward only)")
+	ErrInvalidToken              = errors.New("invalid token")
+	ErrPaused                    = errors.New("venue is paused")
+	ErrRetractedBook             = errors.New("book is retracted (kappa == 0) or has no anchor")
+	ErrCurveDomain               = errors.New("coordinate outside the curve domain")
+	ErrCurveAmplification        = errors.New("amplification outside (WAD/2, 1000*WAD]")
+	ErrSwapExhausted             = errors.New("nothing fills (input below normalized resolution or support exhausted)")
+	ErrZeroAmountOut             = errors.New("zero amount out")
+	ErrInvalidFee                = errors.New("directional fee at or above 100%")
+	ErrOverflow                  = errors.New("amount overflow")
+	ErrInexactFeeState           = errors.New("dynamic fee state cannot be reconstructed exactly after a prior book move")
+	ErrInexactLiquidityState     = errors.New("CVAMM liquidity state cannot be replayed exactly")
+	ErrImplementationChanged     = errors.New("CVAMM proxy implementation changed; relisting is required before its layout can be read")
+	ErrImplementationUnpinned    = errors.New("CVAMM proxy implementation is not pinned in listing metadata")
+	ErrUnsupportedImplementation = errors.New("CVAMM implementation code hash is not supported by the layout-bound simulator")
+	ErrInvalidSnapshotWord       = errors.New("invalid or unpinned CVAMM snapshot word")
 )

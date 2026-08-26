@@ -194,24 +194,19 @@ func addRPCCalls(rawAdd func(*ethrpc.Call, []any), se *StaticExtra, rd *rpcState
 	}, []any{&rd.rvpsWad})
 	// The CVAMM's reservation price (stable-base per volatile-base, WAD). A base CVAMM
 	// fill moves rvps only through fees landing in idle; this word values that fee leg
-	// so the coupled simulator can shift rvps/PriceWad exactly. Tolerated: only the
-	// meta-coupling refinement is lost without it.
+	// so the coupled simulator can shift rvps/PriceWad exactly. All three reads are
+	// required: without the idle split a withdraw's separate floors cannot be replayed.
 	if se.UnderlyingCvamm != "" {
-		tolerated[numCalls] = true
 		add(&ethrpc.Call{
 			ABI:    cvammALMABI,
 			Target: se.UnderlyingCvamm,
 			Method: cvammMethodReservationPriceWad,
 		}, []any{&rd.almResvPrice})
-		// The idle split, so a redeem's physical legs reproduce the ALM's separate
-		// floors. Tolerated: without them the legs fall back to the swapper's preview.
-		tolerated[numCalls] = true
 		add(&ethrpc.Call{
 			ABI:    cvammALMABI,
 			Target: se.UnderlyingCvamm,
 			Method: cvammMethodIdleStable,
 		}, []any{&rd.almIdleStable})
-		tolerated[numCalls] = true
 		add(&ethrpc.Call{
 			ABI:    cvammALMABI,
 			Target: se.UnderlyingCvamm,
@@ -483,6 +478,9 @@ func buildPoolState(p entity.Pool, staticExtra *StaticExtra, rd *rpcState,
 		required = append(required, rd.interestRate, rd.mcrWad, rd.icrPriceWad,
 			rd.activeIndex, rd.lastIndexUpd)
 	}
+	if staticExtra.UnderlyingCvamm != "" {
+		required = append(required, rd.almResvPrice, rd.almIdleStable, rd.almIdleVol)
+	}
 	for _, v := range required {
 		if v == nil || v.Sign() < 0 {
 			return p, ErrInvalidSnapshotWord
@@ -536,17 +534,11 @@ func buildPoolState(p entity.Pool, staticExtra *StaticExtra, rd *rpcState,
 		}
 	}
 
-	var resvPrice *big.Int
-	if rd.almResvPrice != nil && rd.almResvPrice.Sign() > 0 {
-		resvPrice = rd.almResvPrice
-	}
-	// Both idle words or neither: a half-decoded split would misplace a leg.
-	var idleStable, idleVolatile *big.Int
-	if rd.almIdleStable != nil && rd.almIdleVol != nil &&
-		rd.almIdleStable.Sign() >= 0 && rd.almIdleVol.Sign() >= 0 &&
-		rd.almIdleStable.Cmp(rd.totalAmounts.StableReserve) <= 0 &&
-		rd.almIdleVol.Cmp(rd.totalAmounts.VolatileReserve) <= 0 {
-		idleStable, idleVolatile = rd.almIdleStable, rd.almIdleVol
+	if staticExtra.UnderlyingCvamm != "" &&
+		(rd.almResvPrice.Sign() <= 0 ||
+			rd.almIdleStable.Cmp(rd.totalAmounts.StableReserve) > 0 ||
+			rd.almIdleVol.Cmp(rd.totalAmounts.VolatileReserve) > 0) {
+		return p, ErrInvalidSnapshotWord
 	}
 	levBlock, dlvBlock := gateReasons(staticExtra, rd)
 	if reason := mathAttestation(staticExtra, rd); reason != "" {
@@ -579,8 +571,8 @@ func buildPoolState(p entity.Pool, staticExtra *StaticExtra, rd *rpcState,
 		PriceWad: rd.exchangeState.PriceWad, SpreadPpm: rd.exchangeState.SpreadPpm,
 		AlmStableReserve:   rd.totalAmounts.StableReserve,
 		AlmVolatileReserve: rd.totalAmounts.VolatileReserve,
-		AlmIdleStable:      idleStable,
-		AlmIdleVolatile:    idleVolatile,
+		AlmIdleStable:      rd.almIdleStable,
+		AlmIdleVolatile:    rd.almIdleVol,
 		AlmSupply:          rd.almSupply,
 		CvTotalAssets:      rd.cvTotalAssets, CvTotalSupply: rd.cvTotalSupply,
 		CvDecimalsOffset: staticExtra.CvDecimalsOffset, WithdrawFeeBp: rd.withdrawFeeBp,
@@ -590,7 +582,7 @@ func buildPoolState(p entity.Pool, staticExtra *StaticExtra, rd *rpcState,
 		InterestRate:          rd.interestRate,
 		DebtGasCompensation:   staticExtra.DebtGasCompensation,
 		RvpsWad:               rd.rvpsWad,
-		AlmResvPriceWad:       resvPrice,
+		AlmResvPriceWad:       rd.almResvPrice,
 		McrWad:                rd.mcrWad,
 		IcrPriceWad:           rd.icrPriceWad,
 		CcrWad:                ccrWad,

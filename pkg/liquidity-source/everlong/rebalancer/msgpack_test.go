@@ -13,10 +13,12 @@ import (
 
 // TestMsgpackRoundTrip guards the pool-service -> router-service hop. The deployed
 // curve constants travel inside the simulator as *big.Int (several in fixed-size
-// arrays); if any of them decoded as nil the first quote would panic rather than
-// misprice, so this asserts the whole StaticExtra survives and still quotes.
+// arrays); if any of them decoded as nil factory wiring would panic. A serialized bare
+// simulator must remain unroutable: the base interface is deliberately not persisted,
+// and only NewPoolSimulatorWithBases may attest and enable it.
 func TestMsgpackRoundTrip(t *testing.T) {
-	sim := newTestPoolSimulator(t)
+	sim, err := NewPoolSimulator(newTestPoolEntity(t))
+	require.NoError(t, err)
 	tokenIn, tokenOut, amountIn := quoteableDirection(t, sim)
 
 	// Mirrors pkg/msgpack's encoder/decoder settings; that package cannot be imported
@@ -49,16 +51,13 @@ func TestMsgpackRoundTrip(t *testing.T) {
 	assert.Equal(t, sim.Extra.PriceWad.String(), decoded.Extra.PriceWad.String())
 	assert.Equal(t, sim.StaticExtra.Swapper, decoded.StaticExtra.Swapper)
 
-	// And the round-tripped simulator must still quote identically.
+	// Both sides remain fail-closed until the exact base is wired by the meta factory.
 	params := pool.CalcAmountOutParams{
 		TokenAmountIn: pool.TokenAmount{Token: tokenIn, Amount: amountIn},
 		TokenOut:      tokenOut,
 	}
-	want, err := sim.CalcAmountOut(params)
-	require.NoError(t, err)
-	got, err := decoded.CalcAmountOut(params)
-	require.NoError(t, err)
-	assert.Equal(t, want.TokenAmountOut.Amount.String(), got.TokenAmountOut.Amount.String())
-	assert.Equal(t, want.Gas, got.Gas)
-	assert.Equal(t, want.RemainingTokenAmountIn.Amount.String(), got.RemainingTokenAmountIn.Amount.String())
+	_, err = sim.CalcAmountOut(params)
+	require.ErrorIs(t, err, ErrInexactCoupledState)
+	_, err = decoded.CalcAmountOut(params)
+	require.ErrorIs(t, err, ErrInexactCoupledState)
 }
