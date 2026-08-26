@@ -30,6 +30,39 @@ func TestStateOverridesFailClosed(t *testing.T) {
 	require.Equal(t, original, got)
 }
 
+func TestEmptyStateOverridesNormalizeToExactPath(t *testing.T) {
+	for _, overrides := range []map[common.Address]gethclient.OverrideAccount{
+		nil,
+		{},
+	} {
+		normalized, err := normalizeStateOverrides(overrides)
+		require.NoError(t, err)
+		require.Nil(t, normalized,
+			"the exact raw rv/code path is selected by nil, so empty maps must normalize to nil")
+	}
+}
+
+// An empty allocated override set is not an alternate state. This exercises the public
+// path against the live fixture because the regression lived in the handoff to the raw
+// implementation/rv/code probes: when the empty map was passed through as non-nil, the
+// first quote remained exact but the exact inputs needed after UpdateBalance vanished.
+func TestEmptyStateOverridesPreserveExactFeeState(t *testing.T) {
+	test.SkipCI(t)
+	ctx := context.Background()
+	client, cfg := liveClient()
+	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
+	require.NoError(t, err)
+	require.Len(t, pools, 1)
+
+	tracked, err := NewPoolTracker(cfg, client).GetNewPoolStateWithOverrides(ctx, pools[0],
+		pool.GetNewPoolStateWithOverridesParams{Overrides: map[common.Address]gethclient.OverrideAccount{}})
+	require.NoError(t, err)
+	sim, err := NewPoolSimulator(tracked)
+	require.NoError(t, err)
+	require.True(t, sim.Extra.feeLawExactTracked(),
+		"an empty override set must retain the same exact fee inputs as the ordinary tracker path")
+}
+
 // Live pipeline test: lister -> tracker -> simulator against a real deployment, with a
 // wei-exact parity gate against the venue itself. Env-gated so the suite stays hermetic:
 //

@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/goccy/go-json"
 	"github.com/holiman/uint256"
 	"github.com/stretchr/testify/require"
@@ -12,6 +13,7 @@ import (
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/entity"
 	everlongcvamm "github.com/KyberNetwork/kyberswap-dex-lib/pkg/liquidity-source/everlong/cvamm"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 const (
@@ -116,7 +118,16 @@ func newTestPoolEntity(t *testing.T) entity.Pool {
 		UnderlyingCvamm:            "0xf5124f5605ce1e91a7429b837b7dac8f9e5378dd",
 		UnderlyingDepositAllowlist: "0x39775655b6dac328fed814b732d688b0ff85cbd4",
 		CvDecimalsOffset:           f.CvDecimalsOffset,
+		Math:                       "0x4ebd7a6543ace6076f089082931c380a3675bc5c",
+		PositionManager:            "0x0000000000000000000000000000000000000021",
+		BorrowerOperations:         "0x0000000000000000000000000000000000000022",
+		Core:                       "0x0000000000000000000000000000000000000023",
+		Implementation:             "0xa4e063cdbfd0f309055dad68278038790bd05df1",
+		StableToken:                testNECT,
+		DebtGasCompensation:        bi(t, f.DebtGasCompensation),
+		ManagedVault:               "0x0000000000000000000000000000000000000024",
 		CurveParams:                berachainCurveParams(),
+		VolatileToken:              testWBTC,
 	})
 	require.NoError(t, err)
 
@@ -135,8 +146,79 @@ func newTestPoolEntity(t *testing.T) entity.Pool {
 	}
 }
 
+func mutateTestStaticExtra(t *testing.T, p *entity.Pool, mutate func(*StaticExtra)) {
+	t.Helper()
+	var se StaticExtra
+	require.NoError(t, json.Unmarshal([]byte(p.StaticExtra), &se))
+	mutate(&se)
+	raw, err := json.Marshal(se)
+	require.NoError(t, err)
+	p.StaticExtra = string(raw)
+}
+
+func TestNewPoolSimulatorRejectsInvalidImmutableProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		want   error
+		mutate func(*testing.T, *entity.Pool)
+	}{
+		{
+			name: "pool is not swapper",
+			want: ErrInvalidPoolProfile,
+			mutate: func(_ *testing.T, p *entity.Pool) {
+				p.Address = "0x00000000000000000000000000000000000000ff"
+			},
+		},
+		{
+			name: "not exactly two tokens",
+			want: ErrInvalidPoolProfile,
+			mutate: func(_ *testing.T, p *entity.Pool) {
+				p.Tokens = p.Tokens[:1]
+			},
+		},
+		{
+			name: "token zero is not stable",
+			want: ErrInvalidPoolProfile,
+			mutate: func(_ *testing.T, p *entity.Pool) {
+				p.Tokens[0].Address = "0x00000000000000000000000000000000000000ff"
+			},
+		},
+		{
+			name: "required address absent",
+			want: ErrInvalidPoolProfile,
+			mutate: func(t *testing.T, p *entity.Pool) {
+				mutateTestStaticExtra(t, p, func(se *StaticExtra) { se.Math = "" })
+			},
+		},
+		{
+			name: "runtime unsupported",
+			want: ErrUnsupportedImplementation,
+			mutate: func(t *testing.T, p *entity.Pool) {
+				mutateTestStaticExtra(t, p, func(se *StaticExtra) {
+					se.ImplementationCodeHash = "0xdeadbeef"
+				})
+			},
+		},
+		{
+			name: "curve word absent",
+			want: ErrInvalidCurveParams,
+			mutate: func(t *testing.T, p *entity.Pool) {
+				mutateTestStaticExtra(t, p, func(se *StaticExtra) { se.CurveParams.BezierPhi[2] = nil })
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestPoolEntity(t)
+			tc.mutate(t, &p)
+			_, err := NewPoolSimulator(p)
+			require.ErrorIs(t, err, tc.want)
+		})
+	}
+}
+
 func newTestPoolSimulator(t *testing.T) *PoolSimulator {
 	p := newTestPoolEntity(t)
+	baseAddress := "0xf5124f5605ce1e91a7429b837b7dac8f9e5378dd"
 	baseExtra, err := json.Marshal(everlongcvamm.Extra{
 		Support: everlongcvamm.Support{
 			AWad: uint256.MustFromDecimal("34000000000000000000"),
@@ -154,14 +236,43 @@ func newTestPoolSimulator(t *testing.T) *PoolSimulator {
 		ReservationPriceWad: uint256.MustFromDecimal("638569604086845466156025208308271"),
 	})
 	require.NoError(t, err)
+	// Keep this composed-venue fixture in the current CVAMM cache format. The profile
+	// hash deliberately mirrors that package's v1 configured-identity tuple; a future
+	// profile version must update this fixture rather than silently constructing a stale
+	// base pool.
+	baseProfile, err := json.Marshal(struct {
+		Version       uint64              `json:"version"`
+		DexID         string              `json:"dexId"`
+		ChainID       valueobject.ChainID `json:"chainId"`
+		ALM           string              `json:"alm"`
+		Adapter       string              `json:"adapter"`
+		GasStableIn   int64               `json:"gasStableIn"`
+		GasVolatileIn int64               `json:"gasVolatileIn"`
+	}{
+		Version: 1, DexID: everlongcvamm.DexType, ChainID: valueobject.ChainIDBerachain,
+		ALM: baseAddress,
+	})
+	require.NoError(t, err)
+	baseStatic, err := json.Marshal(everlongcvamm.StaticExtra{
+		ProfileVersion:         1,
+		DexID:                  everlongcvamm.DexType,
+		ChainID:                valueobject.ChainIDBerachain,
+		ALM:                    baseAddress,
+		Token0:                 testNECT,
+		Token1:                 testWBTC,
+		ConfigHash:             crypto.Keccak256Hash(baseProfile).Hex(),
+		Implementation:         "0x0a430e21ecad92d8eb556ff5101db9b973a6dba8",
+		ImplementationCodeHash: "0xcc6532930b94e24d165751accb1e4283bf6effe09e19e894ae2be5aa0643eba3",
+	})
+	require.NoError(t, err)
 	base, err := everlongcvamm.NewPoolSimulator(entity.Pool{
-		Address:     "0xf5124f5605ce1e91a7429b837b7dac8f9e5378dd",
+		Address:     baseAddress,
 		Exchange:    everlongcvamm.DexType,
 		Type:        everlongcvamm.DexType,
 		Tokens:      p.Tokens,
 		Reserves:    entity.PoolReserves{"275607106040001229469", "422007"},
 		Extra:       string(baseExtra),
-		StaticExtra: "{}",
+		StaticExtra: string(baseStatic),
 		BlockNumber: p.BlockNumber,
 	})
 	require.NoError(t, err)

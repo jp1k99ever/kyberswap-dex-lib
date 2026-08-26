@@ -2,6 +2,7 @@ package everlongrebalancer
 
 import (
 	"bytes"
+	"math/big"
 	"testing"
 
 	"github.com/KyberNetwork/msgpack/v5"
@@ -10,6 +11,21 @@ import (
 
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
 )
+
+func msgpackRoundTrip(t *testing.T, sim *PoolSimulator) *PoolSimulator {
+	t.Helper()
+	var buf bytes.Buffer
+	enc := msgpack.NewEncoder(&buf)
+	enc.IncludeUnexported(true)
+	enc.SetForceAsArray(true)
+	require.NoError(t, enc.Encode(sim))
+
+	dec := msgpack.NewDecoder(&buf)
+	dec.IncludeUnexported(true)
+	var decoded PoolSimulator
+	require.NoError(t, dec.Decode(&decoded))
+	return &decoded
+}
 
 // TestMsgpackRoundTrip guards the pool-service -> router-service hop. The deployed
 // curve constants travel inside the simulator as *big.Int (several in fixed-size
@@ -27,16 +43,7 @@ func TestMsgpackRoundTrip(t *testing.T) {
 
 	// Mirrors pkg/msgpack's encoder/decoder settings; that package cannot be imported
 	// here because its generated registry imports this one.
-	var buf bytes.Buffer
-	enc := msgpack.NewEncoder(&buf)
-	enc.IncludeUnexported(true)
-	enc.SetForceAsArray(true)
-	require.NoError(t, enc.Encode(sim))
-
-	dec := msgpack.NewDecoder(&buf)
-	dec.IncludeUnexported(true)
-	var decoded PoolSimulator
-	require.NoError(t, dec.Decode(&decoded))
+	decoded := msgpackRoundTrip(t, sim)
 	require.True(t, decoded.couplingExact, "the regression must exercise a persisted true latch")
 	require.Nil(t, decoded.basePool, "interface-backed base state is intentionally not serialized")
 
@@ -59,6 +66,7 @@ func TestMsgpackRoundTrip(t *testing.T) {
 	assert.Equal(t, sim.StaticExtra.ImplementationCodeHash, decoded.StaticExtra.ImplementationCodeHash)
 	assert.Equal(t, sim.StaticExtra.SwapperCodeHash, decoded.StaticExtra.SwapperCodeHash)
 	assert.Equal(t, sim.StaticExtra.MathCodeHash, decoded.StaticExtra.MathCodeHash)
+	assert.Equal(t, sim.StaticExtra.VolatileToken, decoded.StaticExtra.VolatileToken)
 	assert.Equal(t, sim.StaticExtra.UnderlyingDepositAllowlist,
 		decoded.StaticExtra.UnderlyingDepositAllowlist)
 
@@ -71,4 +79,96 @@ func TestMsgpackRoundTrip(t *testing.T) {
 	require.ErrorIs(t, err, ErrInexactCoupledState)
 	_, err = decoded.CalcAmountOut(params)
 	require.ErrorIs(t, err, ErrInexactCoupledState)
+}
+
+// TestCurrentFormatMsgpackProfileCorruptionFailsClosed proves that a cache object in
+// the current wire shape cannot bypass the entity-pool constructor. Each mutation is
+// encoded and decoded normally, with the old routable latch deliberately preserved;
+// CalcAmountOut must reject the immutable profile before noticing the absent base.
+func TestCurrentFormatMsgpackProfileCorruptionFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		want   error
+		mutate func(*PoolSimulator)
+	}{
+		{
+			name: "pool address",
+			want: ErrInvalidPoolProfile,
+			mutate: func(sim *PoolSimulator) {
+				sim.Info.Address = "0x00000000000000000000000000000000000000ff"
+			},
+		},
+		{
+			name: "unpinned block",
+			want: ErrInvalidPoolProfile,
+			mutate: func(sim *PoolSimulator) {
+				sim.Info.BlockNumber = 0
+			},
+		},
+		{
+			name: "token order",
+			want: ErrInvalidPoolProfile,
+			mutate: func(sim *PoolSimulator) {
+				sim.Info.Tokens[0], sim.Info.Tokens[1] = sim.Info.Tokens[1], sim.Info.Tokens[0]
+			},
+		},
+		{
+			name: "token count",
+			want: ErrInvalidPoolProfile,
+			mutate: func(sim *PoolSimulator) {
+				sim.Info.Tokens = sim.Info.Tokens[:1]
+			},
+		},
+		{
+			name: "required static address",
+			want: ErrInvalidPoolProfile,
+			mutate: func(sim *PoolSimulator) {
+				sim.StaticExtra.Core = ""
+			},
+		},
+		{
+			name: "volatile identity",
+			want: ErrInvalidPoolProfile,
+			mutate: func(sim *PoolSimulator) {
+				sim.StaticExtra.VolatileToken = "0x00000000000000000000000000000000000000ff"
+			},
+		},
+		{
+			name: "runtime hash",
+			want: ErrUnsupportedSwapper,
+			mutate: func(sim *PoolSimulator) {
+				sim.StaticExtra.SwapperCodeHash = "0xdeadbeef"
+			},
+		},
+		{
+			name: "curve value",
+			want: ErrInvalidCurveParams,
+			mutate: func(sim *PoolSimulator) {
+				sim.StaticExtra.CurveParams.HJoin = new(big.Int).Add(
+					sim.StaticExtra.CurveParams.HJoin, big.NewInt(1))
+			},
+		},
+		{
+			name: "live curve value",
+			want: ErrInvalidCurveParams,
+			mutate: func(sim *PoolSimulator) {
+				curve := berachainCurveParams()
+				curve.PhysicalCrFloorWad.Add(curve.PhysicalCrFloorWad, big.NewInt(1))
+				sim.Extra.LiveCurve = &curve
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sim, err := NewPoolSimulator(newTestPoolEntity(t))
+			require.NoError(t, err)
+			sim.couplingExact = true
+			tc.mutate(sim)
+			decoded := msgpackRoundTrip(t, sim)
+			_, err = decoded.CalcAmountOut(pool.CalcAmountOutParams{
+				TokenAmountIn: pool.TokenAmount{Token: testNECT, Amount: big.NewInt(1)},
+				TokenOut:      testWBTC,
+			})
+			require.ErrorIs(t, err, tc.want)
+		})
+	}
 }

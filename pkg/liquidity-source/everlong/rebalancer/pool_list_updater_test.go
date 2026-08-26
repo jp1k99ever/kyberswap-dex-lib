@@ -16,6 +16,8 @@ func TestMetadataMatchesImplementation(t *testing.T) {
 	vault := common.HexToAddress("0x0000000000000000000000000000000000000002")
 	implementation := common.HexToAddress("0x0000000000000000000000000000000000000003")
 	depositAllowlist := common.HexToAddress("0x0000000000000000000000000000000000000005")
+	stable := common.HexToAddress("0x0000000000000000000000000000000000000006").Hex()
+	volatile := common.HexToAddress("0x0000000000000000000000000000000000000007").Hex()
 	configHash := "0xconfig"
 
 	metadata := Metadata{
@@ -28,20 +30,34 @@ func TestMetadataMatchesImplementation(t *testing.T) {
 		MathCodeHash:               supportedCollRebalancerMathCodeHash,
 		UnderlyingDepositAllowlist: depositAllowlist.Hex(),
 		ConfigHash:                 configHash,
+		StableToken:                stable,
+		VolatileToken:              volatile,
 	}
-	require.True(t, metadata.matches(swapper, vault, implementation, depositAllowlist, configHash))
+	require.True(t, metadata.matches(swapper, vault, implementation, depositAllowlist,
+		stable, volatile, configHash))
 	require.False(t, metadata.matches(swapper, vault,
-		common.HexToAddress("0x0000000000000000000000000000000000000004"), depositAllowlist, configHash),
+		common.HexToAddress("0x0000000000000000000000000000000000000004"), depositAllowlist,
+		stable, volatile, configHash),
 		"an implementation-only upgrade must relist the pool")
 	require.False(t, metadata.matches(swapper, vault, implementation,
-		common.HexToAddress("0x0000000000000000000000000000000000000006"), configHash),
+		common.HexToAddress("0x0000000000000000000000000000000000000008"),
+		stable, volatile, configHash),
 		"a raw ALM allowlist rotation must relist the pool")
-	require.False(t, metadata.matches(swapper, vault, implementation, depositAllowlist, "0xchanged"),
+	require.False(t, metadata.matches(swapper, vault, implementation, depositAllowlist,
+		stable, volatile, "0xchanged"),
 		"a config-only change must relist the pool")
+	require.False(t, metadata.matches(swapper, vault, implementation, depositAllowlist,
+		stable, common.HexToAddress("0x0000000000000000000000000000000000000009").Hex(), configHash),
+		"an on-chain pair change must relist the pool")
 
 	metadata.Implementation = "" // cursor persisted by the previous integration version
-	require.False(t, metadata.matches(swapper, vault, implementation, depositAllowlist, configHash),
+	require.False(t, metadata.matches(swapper, vault, implementation, depositAllowlist,
+		stable, volatile, configHash),
 		"an old cursor must relist once to pin the implementation")
+	metadata.Implementation = implementation.Hex()
+	metadata.VolatileToken = "" // cursor persisted before token1 was bound in StaticExtra
+	require.False(t, metadata.matches(swapper, vault, implementation, depositAllowlist,
+		stable, volatile, configHash), "an old cursor must relist once to pin token1")
 }
 
 func TestRuntimeCodeHashMatchesExactRuntime(t *testing.T) {

@@ -21,11 +21,12 @@ type PoolsListUpdater struct {
 	ethrpcClient *ethrpc.Client
 }
 
-// Metadata is the listing cursor: the set of ALMs already listed, so venues added to
-// the config later are picked up without relisting the rest.
+// Metadata is the listing cursor: venues added later and venues whose implementation or
+// configured execution profile changed are emitted without relisting unaffected ALMs.
 type Metadata struct {
 	Listed          map[string]bool   `json:"listed"`
 	Implementations map[string]string `json:"implementations,omitempty"`
+	Profiles        map[string]string `json:"profiles,omitempty"`
 }
 
 var _ = poollist.RegisterFactoryCE(DexType, NewPoolsListUpdater)
@@ -41,7 +42,8 @@ func NewPoolsListUpdater(cfg *Config, ethrpcClient *ethrpc.Client) *PoolsListUpd
 // pool address = ALM address — and pins the stable to leg 0 (token0) and the volatile to
 // leg 1, read from the contract rather than configured. Reserves are left to the tracker.
 func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte) ([]entity.Pool, []byte, error) {
-	metadata := Metadata{Listed: map[string]bool{}, Implementations: map[string]string{}}
+	metadata := Metadata{Listed: map[string]bool{}, Implementations: map[string]string{},
+		Profiles: map[string]string{}}
 	if len(metadataBytes) > 0 {
 		if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
 			return nil, metadataBytes, err
@@ -51,6 +53,9 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		}
 		if metadata.Implementations == nil {
 			metadata.Implementations = map[string]string{}
+		}
+		if metadata.Profiles == nil {
+			metadata.Profiles = map[string]string{}
 		}
 	}
 
@@ -64,19 +69,29 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 	}
 	block := new(big.Int).SetUint64(blockNumber)
 	implementations := make(map[string]string, len(u.config.ALMs))
+	profiles := make(map[string]string, len(u.config.ALMs))
 	var newALMs []ALMConfig
 	for _, alm := range u.config.ALMs {
-		almAddress := strings.ToLower(alm.Address)
+		almAddress, ok := normalizeAddress(alm.Address, false)
+		if !ok {
+			return nil, metadataBytes, ErrInvalidProfile
+		}
+		profile, err := cvammConfigHash(u.config.DexID, u.config.ChainID, alm)
+		if err != nil {
+			return nil, metadataBytes, err
+		}
+		profiles[almAddress] = profile
 		word, err := u.ethrpcClient.GetETHClient().StorageAt(ctx,
 			common.HexToAddress(alm.Address), cvammEIP1967ImplSlot, block)
 		if err != nil {
 			return nil, metadataBytes, err
 		}
-		impl := strings.ToLower(common.BytesToAddress(word).Hex())
-		if common.HexToAddress(impl) == (common.Address{}) {
+		implAddress := common.BytesToAddress(word)
+		if implAddress == (common.Address{}) {
 			return nil, metadataBytes, ErrImplementationUnpinned
 		}
-		code, err := u.ethrpcClient.GetETHClient().CodeAt(ctx, common.HexToAddress(impl), block)
+		impl := hexutil.Encode(implAddress[:])
+		code, err := u.ethrpcClient.GetETHClient().CodeAt(ctx, implAddress, block)
 		if err != nil {
 			return nil, metadataBytes, err
 		}
@@ -85,7 +100,8 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		}
 		implementations[almAddress] = impl
 		if !metadata.Listed[almAddress] ||
-			!strings.EqualFold(metadata.Implementations[almAddress], impl) {
+			!strings.EqualFold(metadata.Implementations[almAddress], impl) ||
+			!strings.EqualFold(metadata.Profiles[almAddress], profile) {
 			newALMs = append(newALMs, alm)
 		}
 	}
@@ -124,11 +140,22 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		if tokens0[i] == (common.Address{}) || tokens1[i] == (common.Address{}) {
 			continue
 		}
+		almAddress, _ := normalizeAddress(alm.Address, false)
+		token0 := hexutil.Encode(tokens0[i][:])
+		token1 := hexutil.Encode(tokens1[i][:])
+		adapter, _ := normalizeAddress(alm.Adapter, true)
 		staticExtra, err := json.Marshal(StaticExtra{
+			ProfileVersion:         cvammProfileVersion,
+			DexID:                  u.config.DexID,
+			ChainID:                u.config.ChainID,
+			ALM:                    almAddress,
+			Token0:                 token0,
+			Token1:                 token1,
+			ConfigHash:             profiles[almAddress],
 			FeeHook:                hookOrEmpty(feeHooks[i]),
-			Implementation:         implementations[strings.ToLower(alm.Address)],
+			Implementation:         implementations[almAddress],
 			ImplementationCodeHash: supportedImplementationCodeHash.Hex(),
-			Adapter:                strings.ToLower(alm.Adapter),
+			Adapter:                adapter,
 			GasStableIn:            alm.GasStableIn,
 			GasVolatileIn:          alm.GasVolatileIn,
 		})
@@ -136,15 +163,14 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 			return nil, metadataBytes, err
 		}
 
-		almAddress := strings.ToLower(alm.Address)
 		pools = append(pools, entity.Pool{
 			Address:   almAddress,
 			Exchange:  u.config.DexID,
 			Type:      DexType,
 			Timestamp: time.Now().Unix(),
 			Tokens: []*entity.PoolToken{
-				{Address: hexutil.Encode(tokens0[i][:]), Swappable: true},
-				{Address: hexutil.Encode(tokens1[i][:]), Swappable: true},
+				{Address: token0, Swappable: true},
+				{Address: token1, Swappable: true},
 			},
 			Reserves:    entity.PoolReserves{"0", "0"},
 			StaticExtra: string(staticExtra),
@@ -153,6 +179,7 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		})
 		metadata.Listed[almAddress] = true
 		metadata.Implementations[almAddress] = implementations[almAddress]
+		metadata.Profiles[almAddress] = profiles[almAddress]
 	}
 
 	newMetadataBytes, err := json.Marshal(metadata)

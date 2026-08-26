@@ -63,6 +63,9 @@ func NewPoolSimulator(p entity.Pool) (*PoolSimulator, error) {
 	if err := json.Unmarshal([]byte(p.StaticExtra), &staticExtra); err != nil {
 		return nil, err
 	}
+	if err := validateEntityProfile(p, &staticExtra); err != nil {
+		return nil, err
+	}
 
 	info := pool.PoolInfo{
 		Address:     p.Address,
@@ -121,6 +124,9 @@ func NewPoolSimulator(p entity.Pool) (*PoolSimulator, error) {
 // CalcAmountOut mirrors CvammSwapLib.execute step for step (no price bound): coordinate
 // fill -> solvency clamp -> pre-trade output-side fee. Pure — no state is written.
 func (p *PoolSimulator) CalcAmountOut(params pool.CalcAmountOutParams) (*pool.CalcAmountOutResult, error) {
+	if !p.profileValid() {
+		return nil, ErrInvalidProfile
+	}
 	indexIn, indexOut := p.GetTokenIndex(params.TokenAmountIn.Token), p.GetTokenIndex(params.TokenOut)
 	if indexIn < 0 || indexOut < 0 || indexIn == indexOut {
 		return nil, ErrInvalidToken
@@ -431,7 +437,7 @@ func (p *PoolSimulator) ApplyLiquidityDelta(sharesDelta, supplyBefore, used0, us
 		p.InvalidateLiquidityState()
 		return nil, nil, nil, nil
 	}
-	if !p.liquidityStateExact || sharesDelta == nil || sharesDelta.Sign() == 0 ||
+	if !p.IsLiquidityStateExact() || sharesDelta == nil || sharesDelta.Sign() == 0 ||
 		supplyBefore == nil || supplyBefore.Sign() <= 0 || p.Extra.Kappa == nil ||
 		p.Extra.Kappa.IsZero() {
 		return refuse()
@@ -543,7 +549,14 @@ func idleOrZero(v *uint256.Int) *uint256.Int {
 // IsLiquidityStateExact is the loose reverse-coupling capability exposed to the
 // rebalancer without a package dependency.
 func (p *PoolSimulator) IsLiquidityStateExact() bool {
-	return p.stateExact && p.liquidityStateExact
+	return p.profileValid() && p.stateExact && p.liquidityStateExact
+}
+
+func (p *PoolSimulator) profileValid() bool {
+	if p == nil {
+		return false
+	}
+	return validStaticProfile(&p.StaticExtra, p.Info.Address, p.Info.Exchange, p.Info.Type, p.Info.Tokens)
 }
 
 // InvalidateLiquidityState permanently fails this clone closed after a transition that

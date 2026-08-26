@@ -75,6 +75,8 @@ func TestLiveListTrackQuote(t *testing.T) {
 	var staticExtra StaticExtra
 	require.NoError(t, json.Unmarshal([]byte(pools[0].StaticExtra), &staticExtra))
 	require.Equal(t, "0x27775ec38e2b394738b73c0d25f63e20063df054", staticExtra.Swapper)
+	require.Equal(t, testNECT, staticExtra.StableToken)
+	require.Equal(t, testWBTC, staticExtra.VolatileToken)
 	require.Equal(t, "0x9e7f375c351a251e80eb89ad33ca62b270fd9b4a", staticExtra.CollVault)
 	require.Equal(t, "0xbd10884d6b55eda1d872cd5108b8aabdc0c3f6ca", staticExtra.ALM)
 

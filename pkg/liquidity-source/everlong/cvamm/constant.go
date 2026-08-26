@@ -5,7 +5,8 @@ import (
 )
 
 const (
-	DexType = "everlong-cvamm"
+	DexType             = "everlong-cvamm"
+	cvammProfileVersion = 1
 
 	almMethodToken0             = "token0"
 	almMethodToken1             = "token1"
@@ -66,5 +67,6 @@ var (
 	ErrImplementationUnpinned    = errors.New("CVAMM proxy implementation is not pinned in listing metadata")
 	ErrUnsupportedImplementation = errors.New("CVAMM implementation code hash is not supported by the layout-bound simulator")
 	ErrInvalidSnapshotWord       = errors.New("invalid or unpinned CVAMM snapshot word")
+	ErrInvalidProfile            = errors.New("invalid or stale CVAMM listing profile")
 	ErrStateOverridesUnsupported = errors.New("CVAMM state overrides cannot be combined with exact out-of-band implementation and fee-state probes")
 )

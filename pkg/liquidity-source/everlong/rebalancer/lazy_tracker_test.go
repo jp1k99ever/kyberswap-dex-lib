@@ -73,8 +73,25 @@ func TestLazyClosureToleratesOptionalReverts(t *testing.T) {
 			values = []any{common.HexToAddress(se.UnderlyingDepositAllowlist)}
 		case allowlistMethodIsDepositAllowed:
 			values = []any{big.NewInt(1)}
+		case coreMethodCcr, pmMethodMcr, pmMethodFetchPrice, pmMethodMaxSystemDebt,
+			pmMethodActiveInterestIndex:
+			values = []any{big.NewInt(1)}
+		case pmMethodSunsetting, pmMethodDefaultedDebt, pmMethodTotalActiveDebt,
+			pmMethodBorrowingRate, pmMethodInterestRate,
+			pmMethodLastActiveIndexUpdate:
+			values = []any{new(big.Int)}
+		case coreMethodIsPeriphery, boMethodIsApprovedDelegate:
+			values = []any{big.NewInt(1)}
 		case rebalancerMethodManagedVault:
-			values = []any{common.Address{}}
+			values = []any{common.HexToAddress(se.ManagedVault)}
+		case boMethodMinNetDebt:
+			values = []any{state.MinNetDebt}
+		case pmMethodEntireSystemBalances:
+			values = []any{big.NewInt(1), big.NewInt(1), big.NewInt(1)}
+		case pmMethodPositions:
+			values = []any{state.Debt, state.Collateral, new(big.Int), uint8(1), new(big.Int), big.NewInt(1)}
+		case pmMethodPendingRewards:
+			values = []any{new(big.Int), new(big.Int)}
 		default:
 			t.Fatalf("unhandled planned call %d: %s", i, call.Method)
 		}

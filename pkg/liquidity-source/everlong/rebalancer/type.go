@@ -59,6 +59,10 @@ type StaticExtra struct {
 	// GasLeverage / GasDeleverage override the measured defaults when non-zero.
 	GasLeverage   int64 `json:"gasLev,omitempty"`
 	GasDeleverage int64 `json:"gasDlv,omitempty"`
+	// VolatileToken is the second swap leg resolved from the settlement swapper. It is
+	// deliberately appended to preserve the field order of already-encoded msgpack
+	// structs while giving the simulator an immutable token1 identity to attest.
+	VolatileToken string `json:"volatileToken,omitempty"`
 }
 
 // Extra is the per-refresh vault snapshot the simulator prices from.
@@ -180,6 +184,8 @@ type PoolMeta struct {
 	BlockNumber     uint64 `json:"blockNumber"`
 }
 
-// Stable is the debt token address, or "" on a StaticExtra persisted before it was
-// derived from the swapper.
+// Stable and Volatile are the swapper-derived token pair. An older StaticExtra without
+// either identity is not a supported production profile and must be relisted.
 func (se *StaticExtra) Stable() string { return se.StableToken }
+
+func (se *StaticExtra) Volatile() string { return se.VolatileToken }

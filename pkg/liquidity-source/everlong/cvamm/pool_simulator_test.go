@@ -4,6 +4,7 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/goccy/go-json"
 	"github.com/holiman/uint256"
 	"github.com/stretchr/testify/require"
@@ -14,7 +15,7 @@ import (
 )
 
 const (
-	testALM     = "0x00000000000000000000000000000000000cva77"
+	testALM     = "0x00000000000000000000000000000000000c0a77"
 	testStable  = "0x0000000000000000000000000000000000000001"
 	testVol     = "0x0000000000000000000000000000000000000002"
 	testFeeSIn  = 400000000000000  // 4 bps, stable-in
@@ -22,9 +23,28 @@ const (
 	hugeReserve = "100000000000000000000000000000000000000"
 )
 
+func testStaticExtra(t *testing.T) string {
+	t.Helper()
+	se := StaticExtra{
+		ProfileVersion:         cvammProfileVersion,
+		DexID:                  DexType,
+		ALM:                    testALM,
+		Token0:                 testStable,
+		Token1:                 testVol,
+		Implementation:         "0x0a430e21ecad92d8eb556ff5101db9b973a6dba8",
+		ImplementationCodeHash: supportedImplementationCodeHash.Hex(),
+	}
+	var err error
+	se.ConfigHash, err = staticConfigHash(&se)
+	require.NoError(t, err)
+	b, err := json.Marshal(se)
+	require.NoError(t, err)
+	return string(b)
+}
+
 // simFromFixture builds a PoolSimulator on a fixture state. Reserves default to
 // effectively-unbounded so the solvency clamp does not bind unless a test wants it to.
-func simFromFixture(t *testing.T, c fixtureCase, reserves entity.PoolReserves) *PoolSimulator {
+func poolEntityFromFixture(t *testing.T, c fixtureCase, reserves entity.PoolReserves) entity.Pool {
 	t.Helper()
 	extraBytes, err := json.Marshal(Extra{
 		Support:          c.sup,
@@ -38,7 +58,7 @@ func simFromFixture(t *testing.T, c fixtureCase, reserves entity.PoolReserves) *
 	if reserves == nil {
 		reserves = entity.PoolReserves{hugeReserve, hugeReserve}
 	}
-	sim, err := NewPoolSimulator(entity.Pool{
+	return entity.Pool{
 		Address:  testALM,
 		Exchange: "everlong-cvamm",
 		Type:     DexType,
@@ -47,9 +67,14 @@ func simFromFixture(t *testing.T, c fixtureCase, reserves entity.PoolReserves) *
 			{Address: testVol, Swappable: true},
 		},
 		Reserves:    reserves,
-		StaticExtra: "{}",
+		StaticExtra: testStaticExtra(t),
 		Extra:       string(extraBytes),
-	})
+	}
+}
+
+func simFromFixture(t *testing.T, c fixtureCase, reserves entity.PoolReserves) *PoolSimulator {
+	t.Helper()
+	sim, err := NewPoolSimulator(poolEntityFromFixture(t, c, reserves))
 	require.NoError(t, err)
 	return sim
 }
@@ -282,11 +307,49 @@ func TestMissingSampledFeeFailsClosed(t *testing.T) {
 		Address: testALM, Exchange: DexType, Type: DexType,
 		Tokens:   []*entity.PoolToken{{Address: testStable}, {Address: testVol}},
 		Reserves: entity.PoolReserves{hugeReserve, hugeReserve}, Extra: string(extraBytes),
-		StaticExtra: "{}",
+		StaticExtra: testStaticExtra(t),
 	})
 	require.NoError(t, err)
 	_, err = calc(sim, c)
 	require.ErrorIs(t, err, ErrInexactFeeState)
+}
+
+func TestPersistedProfileFailsClosedAfterConstructor(t *testing.T) {
+	stableIn, _ := fillableCases(t)
+	require.NotEmpty(t, stableIn)
+	for _, tc := range []struct {
+		name   string
+		mutate func(*PoolSimulator)
+	}{
+		{"profile version", func(s *PoolSimulator) { s.StaticExtra.ProfileVersion = 0 }},
+		{"pool address", func(s *PoolSimulator) {
+			s.Info.Address = "0x0000000000000000000000000000000000000003"
+		}},
+		{"token0", func(s *PoolSimulator) {
+			s.Info.Tokens[0] = "0x0000000000000000000000000000000000000003"
+		}},
+		{"implementation hash", func(s *PoolSimulator) {
+			s.StaticExtra.ImplementationCodeHash = common.Hash{}.Hex()
+		}},
+		{"config hash", func(s *PoolSimulator) { s.StaticExtra.ConfigHash = common.Hash{}.Hex() }},
+		{"exchange", func(s *PoolSimulator) { s.Info.Exchange = "detached" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sim := simFromFixture(t, stableIn[0], nil)
+			tc.mutate(sim)
+			_, err := calc(sim, stableIn[0])
+			require.ErrorIs(t, err, ErrInvalidProfile)
+		})
+	}
+}
+
+func TestLegacyEntityProfileRequiresRelisting(t *testing.T) {
+	stableIn, _ := fillableCases(t)
+	require.NotEmpty(t, stableIn)
+	p := poolEntityFromFixture(t, stableIn[0], nil)
+	p.StaticExtra = "{}"
+	_, err := NewPoolSimulator(p)
+	require.ErrorIs(t, err, ErrInvalidProfile)
 }
 
 // TestApplyLiquidityDeltaAtBoundaries refuses every transition when the snapshot omitted

@@ -67,19 +67,6 @@ func NewPoolSimulatorWithBases(p entity.Pool, basePoolMap map[string]pool.IPoolS
 	if sim.StaticExtra.UnderlyingCvamm == "" {
 		return nil, ErrUnderlyingCvamm
 	}
-	if !strings.EqualFold(sim.StaticExtra.ALMAdapterCodeHash, supportedAlmAdapterCodeHash) {
-		return nil, ErrUnsupportedAdapter
-	}
-	if !strings.EqualFold(sim.StaticExtra.ImplementationCodeHash,
-		supportedRebalancerImplementationCodeHash) {
-		return nil, ErrUnsupportedImplementation
-	}
-	if !strings.EqualFold(sim.StaticExtra.SwapperCodeHash, supportedSettlementSwapperCodeHash) {
-		return nil, ErrUnsupportedSwapper
-	}
-	if !strings.EqualFold(sim.StaticExtra.MathCodeHash, supportedCollRebalancerMathCodeHash) {
-		return nil, ErrUnsupportedMath
-	}
 	base, ok := basePoolMap[strings.ToLower(sim.StaticExtra.UnderlyingCvamm)]
 	if !ok {
 		base, ok = basePoolMap[sim.StaticExtra.UnderlyingCvamm]
@@ -88,8 +75,7 @@ func NewPoolSimulatorWithBases(p entity.Pool, basePoolMap map[string]pool.IPoolS
 		return nil, ErrMissingBasePool
 	}
 	exactBase, ok := base.(exactLiquidityBase)
-	if !ok || sim.Info.BlockNumber == 0 ||
-		!strings.EqualFold(base.GetAddress(), sim.StaticExtra.UnderlyingCvamm) ||
+	if !ok || sim.Info.BlockNumber == 0 || !sim.baseIdentityMatches(base) ||
 		!exactBase.IsLiquidityStateExact() ||
 		exactBase.SnapshotBlockNumber() != sim.Info.BlockNumber {
 		return nil, ErrInexactBasePool
@@ -176,7 +162,7 @@ func (s *PoolSimulator) GetBasePools() []pool.IPoolSimulator {
 // SetBasePool swaps the pointer only — the baseline stays at snapshot time so
 // in-route deltas keep applying. First wiring also pins the baseline.
 func (s *PoolSimulator) SetBasePool(base pool.IPoolSimulator) {
-	if base == nil || !strings.EqualFold(base.GetAddress(), s.StaticExtra.UnderlyingCvamm) {
+	if !s.baseIdentityMatches(base) {
 		return
 	}
 	exactBase, ok := base.(exactLiquidityBase)
@@ -276,7 +262,8 @@ func (s *PoolSimulator) coupledStateExact() bool {
 		return false
 	}
 	base, ok := s.basePool.(exactLiquidityBase)
-	return ok && base.IsLiquidityStateExact()
+	return ok && s.baseIdentityMatches(s.basePool) && base.IsLiquidityStateExact() &&
+		base.SnapshotBlockNumber() == s.Info.BlockNumber
 }
 
 func (s *PoolSimulator) baseRvps(totalSupply *big.Int) (*big.Int, bool) {
@@ -540,6 +527,9 @@ func foldBaseDeltas(e *Extra, dStable, dVolatile, feeStable, feeVolatile, rvps *
 }
 
 func NewPoolSimulator(p entity.Pool) (*PoolSimulator, error) {
+	if len(p.Tokens) != 2 || p.Tokens[0] == nil || p.Tokens[1] == nil {
+		return nil, ErrInvalidPoolProfile
+	}
 	var extra Extra
 	if err := json.Unmarshal([]byte(p.Extra), &extra); err != nil {
 		return nil, err
@@ -551,7 +541,7 @@ func NewPoolSimulator(p entity.Pool) (*PoolSimulator, error) {
 	if extra.CvDecimalsOffset == 0 {
 		extra.CvDecimalsOffset = staticExtra.CvDecimalsOffset
 	}
-	return &PoolSimulator{
+	sim := &PoolSimulator{
 		Pool: pool.Pool{Info: pool.PoolInfo{
 			Address:     p.Address,
 			Exchange:    p.Exchange,
@@ -562,10 +552,20 @@ func NewPoolSimulator(p entity.Pool) (*PoolSimulator, error) {
 		}},
 		StaticExtra: staticExtra,
 		Extra:       extra,
-	}, nil
+	}
+	if err := sim.validateProfile(); err != nil {
+		return nil, err
+	}
+	return sim, nil
 }
 
 func (s *PoolSimulator) CalcAmountOut(params pool.CalcAmountOutParams) (*pool.CalcAmountOutResult, error) {
+	// A msgpack decode reconstructs this struct directly and therefore bypasses the
+	// entity-pool constructor. Re-attest the immutable profile on every quote before any
+	// curve pointer is dereferenced or a stale serialized object can become routable.
+	if err := s.validateProfile(); err != nil {
+		return nil, err
+	}
 	if !s.coupledStateExact() {
 		return nil, ErrInexactCoupledState
 	}

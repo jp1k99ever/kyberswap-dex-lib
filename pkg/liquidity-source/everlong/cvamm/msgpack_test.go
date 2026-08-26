@@ -49,6 +49,7 @@ func TestMsgpackRoundTrip(t *testing.T) {
 	assert.Equal(t, sim.Extra.Kappa.Dec(), decoded.Extra.Kappa.Dec())
 	assert.Equal(t, sim.Extra.Support.AWad.Dec(), decoded.Extra.Support.AWad.Dec())
 	assert.Equal(t, sim.Extra.FeeStableInWad.Dec(), decoded.Extra.FeeStableInWad.Dec())
+	assert.Equal(t, sim.StaticExtra.ConfigHash, decoded.StaticExtra.ConfigHash)
 
 	// And the round-tripped simulator must still quote identically.
 	want, err := calc(sim, c)
@@ -65,4 +66,10 @@ func TestMsgpackRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "1", new(big.Int).Add(clamped.TokenAmountOut.Amount, clamped.Fee.Amount).String(),
 		"a one-wei output reserve must clamp the gross payout to one wei")
+
+	// Concrete msgpack decoding bypasses NewPoolSimulator. Every quote must therefore
+	// re-attest the persisted profile instead of trusting constructor-time validation.
+	decoded.StaticExtra.ProfileVersion = 0
+	_, err = calc(&decoded, c)
+	require.ErrorIs(t, err, ErrInvalidProfile)
 }

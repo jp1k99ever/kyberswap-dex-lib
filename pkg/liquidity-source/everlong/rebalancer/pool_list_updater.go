@@ -48,7 +48,9 @@ type Metadata struct {
 	UnderlyingDepositAllowlist string `json:"underlyingDepositAllowlist,omitempty"`
 	// Fingerprint every config input that shapes the emitted pool/StaticExtra. A config-
 	// only change must relist even when all on-chain pointers remain unchanged.
-	ConfigHash string `json:"configHash,omitempty"`
+	ConfigHash    string `json:"configHash,omitempty"`
+	StableToken   string `json:"stableToken,omitempty"`
+	VolatileToken string `json:"volatileToken,omitempty"`
 }
 
 var _ = poollist.RegisterFactoryCE(DexType, NewPoolsListUpdater)
@@ -239,7 +241,8 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 	// address. The managed vault changes the state key, the implementation changes the
 	// linked pricing code, and the wrapper hash versions its executable semantics; any
 	// change must emit a freshly-attested replacement.
-	if metadata.matches(swapper, managedVault, implementation, underlyingDepositAllowlist, configHash) {
+	if metadata.matches(swapper, managedVault, implementation, underlyingDepositAllowlist,
+		stable, volatile, configHash) {
 		return nil, metadataBytes, nil
 	}
 
@@ -277,6 +280,7 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		StableToken:                stable,
 		DebtGasCompensation:        gasCompensation,
 		ManagedVault:               hexutil.Encode(managedVault[:]),
+		VolatileToken:              volatile,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -292,6 +296,8 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		MathCodeHash:               supportedCollRebalancerMathCodeHash,
 		UnderlyingDepositAllowlist: hexutil.Encode(underlyingDepositAllowlist[:]),
 		ConfigHash:                 configHash,
+		StableToken:                stable,
+		VolatileToken:              volatile,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -316,11 +322,13 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 }
 
 func (m Metadata) matches(swapper, managedVault, implementation, underlyingDepositAllowlist gethcommon.Address,
-	configHash string) bool {
+	stable, volatile, configHash string) bool {
 	return strings.EqualFold(m.Swapper, hexutil.Encode(swapper[:])) &&
 		strings.EqualFold(m.ManagedVault, hexutil.Encode(managedVault[:])) &&
 		strings.EqualFold(m.Implementation, hexutil.Encode(implementation[:])) &&
 		strings.EqualFold(m.UnderlyingDepositAllowlist, hexutil.Encode(underlyingDepositAllowlist[:])) &&
+		strings.EqualFold(m.StableToken, stable) &&
+		strings.EqualFold(m.VolatileToken, volatile) &&
 		strings.EqualFold(m.ALMAdapterCodeHash, supportedAlmAdapterCodeHash) &&
 		strings.EqualFold(m.ImplementationCodeHash, supportedRebalancerImplementationCodeHash) &&
 		strings.EqualFold(m.SwapperCodeHash, supportedSettlementSwapperCodeHash) &&

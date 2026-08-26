@@ -5,11 +5,24 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
+
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 // StaticExtra is the immutable per-venue metadata written at listing time. The pool
 // address IS the ALM address, so only the optional periphery and gas overrides live here.
 type StaticExtra struct {
+	// ProfileVersion and ConfigHash make persisted pools self-identifying. The simulator
+	// revalidates this profile on every quote because msgpack restores the concrete object
+	// without calling NewPoolSimulator; an old/detached cache entry must not pair arbitrary
+	// advertised tokens with calls to the real ALM.
+	ProfileVersion uint64              `json:"profileVersion"`
+	DexID          string              `json:"dexId"`
+	ChainID        valueobject.ChainID `json:"chainId"`
+	ALM            string              `json:"alm"`
+	Token0         string              `json:"token0"`
+	Token1         string              `json:"token1"`
+	ConfigHash     string              `json:"configHash"`
 	// FeeHook resolved at listing. The fee-law terms live on it, and pinning it here is
 	// what lets them be read in the SAME round as everything else — a second round could
 	// not run on the batched path, which left that path without a fee law at all. The

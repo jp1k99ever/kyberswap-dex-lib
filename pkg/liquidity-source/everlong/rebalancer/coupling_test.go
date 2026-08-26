@@ -108,6 +108,7 @@ func exactCouplingHarness(t *testing.T) (*PoolSimulator, *exactBaseStub) {
 	sim.Extra.RvpsWad = new(big.Int).Set(bigWadTest)
 	sim.Extra.AlmResvPriceWad = new(big.Int).Set(bigWadTest)
 	base := newExactBaseStub(sim.StaticExtra.UnderlyingCvamm)
+	base.Info.BlockNumber = sim.Info.BlockNumber
 	sim.wireBase(base)
 	require.NotNil(t, sim.basePool)
 	// Test-only harness: production enables this latch exclusively after the coupled
@@ -165,8 +166,58 @@ func TestCoupledFactoryRejectsUnpinnedBlock(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(p.StaticExtra), &se))
 	_, err := NewPoolSimulatorWithBases(p,
 		map[string]pool.IPoolSimulator{se.UnderlyingCvamm: base})
-	require.ErrorIs(t, err, ErrInexactBasePool,
+	require.ErrorIs(t, err, ErrInvalidPoolProfile,
 		"two unknown block numbers are not a same-block attestation")
+}
+
+func TestCoupledFactoryBindsExactBaseIdentity(t *testing.T) {
+	p := newTestPoolEntity(t)
+	existing := newTestPoolSimulator(t)
+	var se StaticExtra
+	require.NoError(t, json.Unmarshal([]byte(p.StaticExtra), &se))
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*everlongcvamm.PoolSimulator)
+	}{
+		{
+			name: "address",
+			mutate: func(base *everlongcvamm.PoolSimulator) {
+				base.Info.Address = "0x00000000000000000000000000000000000000ff"
+			},
+		},
+		{
+			name: "token order",
+			mutate: func(base *everlongcvamm.PoolSimulator) {
+				base.Info.Tokens[0], base.Info.Tokens[1] = base.Info.Tokens[1], base.Info.Tokens[0]
+			},
+		},
+		{
+			name: "token count",
+			mutate: func(base *everlongcvamm.PoolSimulator) {
+				base.Info.Tokens = base.Info.Tokens[:1]
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := existing.basePool.CloneState().(*everlongcvamm.PoolSimulator)
+			tc.mutate(base)
+			_, err := NewPoolSimulatorWithBases(p,
+				map[string]pool.IPoolSimulator{se.UnderlyingCvamm: base})
+			require.ErrorIs(t, err, ErrInexactBasePool)
+		})
+	}
+}
+
+func TestCalcRejectsBaseSnapshotBlockDrift(t *testing.T) {
+	sim := newTestPoolSimulator(t)
+	sim.Info.BlockNumber++
+	_, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
+		TokenAmountIn: pool.TokenAmount{Token: testNECT, Amount: big.NewInt(1)},
+		TokenOut:      testWBTC,
+	})
+	require.ErrorIs(t, err, ErrInexactCoupledState,
+		"a retained exactness latch must not attest a base from another block")
 }
 
 func TestReverseCouplingRequiresExactTransitionShape(t *testing.T) {

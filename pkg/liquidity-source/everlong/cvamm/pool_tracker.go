@@ -49,10 +49,23 @@ func (t *PoolTracker) GetNewPoolStateWithOverrides(ctx context.Context, p entity
 	// apply to those raw probes, so accepting any non-empty override set would splice two
 	// possible worlds into one entity. Refuse the composite snapshot rather than expose a
 	// first quote whose fee/code/gates were never jointly observed.
-	if len(params.Overrides) != 0 {
+	normalized, err := normalizeStateOverrides(params.Overrides)
+	if err != nil {
 		return p, ErrStateOverridesUnsupported
 	}
-	return t.getNewPoolState(ctx, p, params.Overrides)
+	// An allocated-but-empty map is semantically the same snapshot as nil. Normalize it
+	// here so the exact raw rv/code probes remain enabled; passing the empty map through
+	// used to make getNewPoolState mistake it for an override world and silently disable
+	// chained fee reconstruction.
+	return t.getNewPoolState(ctx, p, normalized)
+}
+
+func normalizeStateOverrides(overrides map[common.Address]gethclient.OverrideAccount) (
+	map[common.Address]gethclient.OverrideAccount, error) {
+	if len(overrides) != 0 {
+		return nil, ErrStateOverridesUnsupported
+	}
+	return nil, nil
 }
 
 // GetNewPoolStateAtBlock pins the whole refresh to one historical block (replay and
@@ -61,6 +74,9 @@ func (t *PoolTracker) GetNewPoolStateAtBlock(ctx context.Context, p entity.Pool,
 	block *big.Int) (entity.Pool, error) {
 	var se StaticExtra
 	if err := json.Unmarshal([]byte(p.StaticExtra), &se); err != nil {
+		return p, err
+	}
+	if err := validateEntityProfile(p, &se); err != nil {
 		return p, err
 	}
 	rd := newRPCState()
@@ -185,6 +201,9 @@ func (t *PoolTracker) LazyNewPoolState(ctx context.Context, p entity.Pool,
 	if err := json.Unmarshal([]byte(p.StaticExtra), &se); err != nil {
 		return nil, nil, err
 	}
+	if err := validateEntityProfile(p, &se); err != nil {
+		return nil, nil, err
+	}
 	rd := newRPCState()
 	req := pool.LazyRequest{Request: t.ethrpcClient.NewRequest().SetContext(ctx)}
 	addRPCCalls(func(c *ethrpc.Call, o []any) {
@@ -218,6 +237,9 @@ func (t *PoolTracker) getNewPoolState(ctx context.Context, p entity.Pool,
 	overrides map[common.Address]gethclient.OverrideAccount) (entity.Pool, error) {
 	var se StaticExtra
 	if err := json.Unmarshal([]byte(p.StaticExtra), &se); err != nil {
+		return p, err
+	}
+	if err := validateEntityProfile(p, &se); err != nil {
 		return p, err
 	}
 	rd := newRPCState()

@@ -118,6 +118,12 @@ func TestReplayLiveSwaps(t *testing.T) {
 			addRPCCalls(func(c *ethrpc.Call, o []any) { req.AddCall(c, o) }, pools[0].Address, nil, rd)
 			_, err = req.Aggregate()
 			require.NoError(t, err)
+			// This replay deliberately assembles a historical ABI-only snapshot rather than
+			// using the current implementation pin across pre-upgrade blocks. A direct
+			// Aggregate does not pass through the normal or lazy tracker wrappers that record
+			// successful bool/address decodes, so attest the two required decodes here after
+			// the aggregate itself succeeded.
+			rd.pausedDecoded, rd.feeHookDecoded = true, true
 			p, err := buildPoolState(pools[0], rd, parent)
 			require.NoError(t, err)
 

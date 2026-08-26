@@ -68,8 +68,23 @@ func (f *venueFixture) newSimulator(t *testing.T) *PoolSimulator {
 			{Address: f.Token0, Swappable: true},
 			{Address: f.Token1, Swappable: true},
 		},
-		Reserves:    entity.PoolReserves{f.ReserveStable, f.ReserveVolatile},
-		StaticExtra: "{}",
+		Reserves: entity.PoolReserves{f.ReserveStable, f.ReserveVolatile},
+		StaticExtra: func() string {
+			se := StaticExtra{
+				ProfileVersion:         cvammProfileVersion,
+				DexID:                  DexType,
+				ALM:                    f.ALM,
+				Token0:                 f.Token0,
+				Token1:                 f.Token1,
+				Implementation:         "0x0a430e21ecad92d8eb556ff5101db9b973a6dba8",
+				ImplementationCodeHash: supportedImplementationCodeHash.Hex(),
+			}
+			se.ConfigHash, err = staticConfigHash(&se)
+			require.NoError(t, err)
+			b, marshalErr := json.Marshal(se)
+			require.NoError(t, marshalErr)
+			return string(b)
+		}(),
 		Extra:       string(extraBytes),
 		BlockNumber: f.Block,
 	})

@@ -122,6 +122,7 @@ var (
 	ErrMathNotLinked             = errors.New("the rebalancer implementation does not link the configured CollRebalancerMath")
 	ErrGateDiscovery             = errors.New("a gate pointer the verified deployment exposes did not resolve")
 	ErrFlashFeeNotExempt         = errors.New("the swapper is not flash-fee exempt on the debt token: every fill would revert NonZeroFlashFee")
+	ErrInvalidPoolProfile        = errors.New("invalid rebalancer pool profile")
 )
 
 var ErrStateOverridesUnsupported = errors.New(
