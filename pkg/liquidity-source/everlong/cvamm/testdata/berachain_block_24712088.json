@@ -1,0 +1,83 @@
+{
+  "comment": "Live Berachain CvammALM state at block 24712088, with the venue's own (amountInUsed, amountOut) for a sweep of fills. The oracle is the SWAP ITSELF \u2014 eth_call on CvammALM.swap under state overrides that grant the caller balance and allowance \u2014 so no quoter, and nothing deployed, is involved anywhere in this integration. amountOut 0 means the venue reverts the fill and the simulator must refuse it.",
+  "block": 24712088,
+  "alm": "0xf5124f5605ce1e91a7429b837b7dac8f9e5378dd",
+  "token0": "0x1ce0a25d13ce4d52071ae7e02cf1f6606f4c79d3",
+  "token1": "0x0555e30da8f98308edb960aa94c0db47230d2b9c",
+  "support": {
+    "aWad": "34000000000000000000",
+    "xLo": "31865306097213932",
+    "xHi": "1099912607172170593",
+    "yHi": "24096289941794300"
+  },
+  "xWad": "498580384806401754",
+  "anchorSqrtCurveX96": "2002090499947173553980875996007816177",
+  "kappa": "22849333026605",
+  "reserveStable": "275607106040001229469",
+  "reserveVolatile": "422007",
+  "feeStableInWad": "20962195950181662",
+  "feeVolatileInWad": "13974797300121108",
+  "paused": false,
+  "executions": [
+    {
+      "stableIn": true,
+      "amountIn": "1",
+      "amountInUsed": "0",
+      "amountOut": "0"
+    },
+    {
+      "stableIn": true,
+      "amountIn": "323715573505113238",
+      "amountInUsed": "323715573505113238",
+      "amountOut": "496"
+    },
+    {
+      "stableIn": true,
+      "amountIn": "107905191168371079152",
+      "amountInUsed": "107905191168371079152",
+      "amountOut": "163397"
+    },
+    {
+      "stableIn": true,
+      "amountIn": "323715573505113237454",
+      "amountInUsed": "323715573505113237454",
+      "amountOut": "413161"
+    },
+    {
+      "stableIn": true,
+      "amountIn": "647431147010226474908",
+      "amountInUsed": "323715573505113237454",
+      "amountOut": "413161"
+    },
+    {
+      "stableIn": false,
+      "amountIn": "1",
+      "amountInUsed": "1",
+      "amountOut": "629734108504062"
+    },
+    {
+      "stableIn": false,
+      "amountIn": "544",
+      "amountInUsed": "544",
+      "amountOut": "342571063731609319"
+    },
+    {
+      "stableIn": false,
+      "amountIn": "181244",
+      "amountInUsed": "181244",
+      "amountOut": "112629034662217310102"
+    },
+    {
+      "stableIn": false,
+      "amountIn": "543731",
+      "amountInUsed": "543731",
+      "amountOut": "271755552598619228371"
+    },
+    {
+      "stableIn": false,
+      "amountIn": "1087462",
+      "amountInUsed": "543731",
+      "amountOut": "271755552598619228371"
+    }
+  ]
+}
