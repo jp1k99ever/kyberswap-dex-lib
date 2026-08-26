@@ -272,11 +272,8 @@ func (s *PoolSimulator) latchCoupling() {
 }
 
 func (s *PoolSimulator) coupledStateExact() bool {
-	if !s.couplingExact {
+	if !s.couplingExact || s.basePool == nil {
 		return false
-	}
-	if s.basePool == nil {
-		return true
 	}
 	base, ok := s.basePool.(exactLiquidityBase)
 	return ok && base.IsLiquidityStateExact()
@@ -297,7 +294,7 @@ func (s *PoolSimulator) baseRvps(totalSupply *big.Int) (*big.Int, bool) {
 // local attestation; a missing marker also fails leverage closed.
 func (s *PoolSimulator) baseReferenceGateAttested() bool {
 	if s.basePool == nil {
-		return true
+		return false
 	}
 	base, ok := s.basePool.(exactLiquidityBase)
 	if !ok || s.baseInventoryX0 == nil {

@@ -20,6 +20,10 @@ func TestMsgpackRoundTrip(t *testing.T) {
 	sim, err := NewPoolSimulator(newTestPoolEntity(t))
 	require.NoError(t, err)
 	tokenIn, tokenOut, amountIn := quoteableDirection(t, sim)
+	// Model a cached simulator that was routable before serialization. Interface fields
+	// are not serialized, but the unexported scalar latch is: decoding must not let that
+	// stale true value attest a missing base pool.
+	sim.couplingExact = true
 
 	// Mirrors pkg/msgpack's encoder/decoder settings; that package cannot be imported
 	// here because its generated registry imports this one.
@@ -33,6 +37,8 @@ func TestMsgpackRoundTrip(t *testing.T) {
 	dec.IncludeUnexported(true)
 	var decoded PoolSimulator
 	require.NoError(t, dec.Decode(&decoded))
+	require.True(t, decoded.couplingExact, "the regression must exercise a persisted true latch")
+	require.Nil(t, decoded.basePool, "interface-backed base state is intentionally not serialized")
 
 	cp, decodedCp := sim.StaticExtra.CurveParams, decoded.StaticExtra.CurveParams
 	assert.Equal(t, cp.LeverageRatioWad.String(), decodedCp.LeverageRatioWad.String())

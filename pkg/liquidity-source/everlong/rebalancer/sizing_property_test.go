@@ -72,7 +72,7 @@ func sampleUpTo(r *rand.Rand, hi *big.Int, n int) []*big.Int {
 func TestPropDeleverageSizing(t *testing.T) {
 	r := propRand(t)
 	cp := berachainCurveParams()
-	var quotable int
+	var quotable, adjacentCompared int
 	for trial := 0; trial < 60; trial++ {
 		s := randomState(t, r)
 		maxGross := cp.maxDeleverageIn(s)
@@ -80,6 +80,34 @@ func TestPropDeleverageSizing(t *testing.T) {
 			continue
 		}
 		quotable++
+		// The inversion below is a bisection, so its safety premise is the exact physical
+		// net — including separate accounted/idle floors — being nondecreasing at every
+		// one-wei gross boundary. Probe adjacent values around random points, curve/CDP
+		// edges and later around every selected inversion result.
+		checkAdjacent := func(g *big.Int) {
+			if g.Sign() <= 0 || g.Cmp(maxGross) >= 0 {
+				return
+			}
+			next := new(big.Int).Add(g, big.NewInt(1))
+			stable, ok := cp.physicalDeleverageStableAt(s, g)
+			stableNext, nextOK := cp.physicalDeleverageStableAt(s, next)
+			if !ok || !nextOK {
+				return
+			}
+			net := new(big.Int).Sub(g, stable)
+			netNext := new(big.Int).Sub(next, stableNext)
+			require.GreaterOrEqual(t, netNext.Cmp(net), 0,
+				"trial %d: physical net decreased at adjacent grosses %s/%s (%s -> %s)",
+				trial, g, next, net, netNext)
+			adjacentCompared++
+		}
+		boundaries := []*big.Int{big.NewInt(1), new(big.Int).Sub(maxGross, big.NewInt(1))}
+		boundaries = append(boundaries, sampleUpTo(r, maxGross, 48)...)
+		for _, center := range boundaries {
+			for delta := int64(-2); delta <= 2; delta++ {
+				checkAdjacent(new(big.Int).Add(center, big.NewInt(delta)))
+			}
+		}
 		// the max quotes; one more is either refused by the curve or past the CDP's
 		// minimum-net-debt ceiling (which the raw quote does not know about)
 		out, _, _ := cp.deleverageQuoteChecked(s, maxGross)
@@ -114,6 +142,9 @@ func TestPropDeleverageSizing(t *testing.T) {
 			require.True(t, ok)
 			require.LessOrEqual(t, new(big.Int).Sub(g, stableOut).Cmp(budget), 0, "trial %d: chosen gross overspends", trial)
 			next := new(big.Int).Add(g, big.NewInt(1))
+			for delta := int64(-3); delta <= 2; delta++ {
+				checkAdjacent(new(big.Int).Add(g, big.NewInt(delta)))
+			}
 			if next.Cmp(maxGross) <= 0 {
 				if so, ok := cp.physicalDeleverageStableAt(s, next); ok {
 					require.Greater(t, new(big.Int).Sub(next, so).Cmp(budget), 0, "trial %d: a larger gross still fits the budget", trial)
@@ -140,6 +171,8 @@ func TestPropDeleverageSizing(t *testing.T) {
 		}
 	}
 	require.Greater(t, quotable, 20, "too few quotable states to mean anything")
+	require.Greater(t, adjacentCompared, 1_000,
+		"too few valid one-wei physical-net boundaries to support bisection")
 }
 
 func TestPropLeverageSizing(t *testing.T) {
