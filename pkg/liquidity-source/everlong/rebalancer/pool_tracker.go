@@ -40,6 +40,13 @@ func (t *PoolTracker) GetNewPoolState(ctx context.Context, p entity.Pool,
 
 func (t *PoolTracker) GetNewPoolStateWithOverrides(ctx context.Context, p entity.Pool,
 	params pool.GetNewPoolStateWithOverridesParams) (entity.Pool, error) {
+	// Flash-fee identity and the EIP-1967 implementation are probed outside the
+	// Multicall3 snapshot. Raw Call/StorageAt probes do not inherit state overrides, so a
+	// non-empty set would combine overridden contract state with real-chain gates. Exact
+	// simulation is preferable to an internally impossible synthetic snapshot.
+	if len(params.Overrides) != 0 {
+		return p, ErrStateOverridesUnsupported
+	}
 	return t.getNewPoolState(ctx, p, params.Overrides)
 }
 

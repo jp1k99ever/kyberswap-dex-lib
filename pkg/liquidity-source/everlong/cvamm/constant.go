@@ -66,4 +66,5 @@ var (
 	ErrImplementationUnpinned    = errors.New("CVAMM proxy implementation is not pinned in listing metadata")
 	ErrUnsupportedImplementation = errors.New("CVAMM implementation code hash is not supported by the layout-bound simulator")
 	ErrInvalidSnapshotWord       = errors.New("invalid or unpinned CVAMM snapshot word")
+	ErrStateOverridesUnsupported = errors.New("CVAMM state overrides cannot be combined with exact out-of-band implementation and fee-state probes")
 )

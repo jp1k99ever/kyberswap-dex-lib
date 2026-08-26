@@ -110,6 +110,9 @@ var (
 	ErrFlashFeeNotExempt   = errors.New("the swapper is not flash-fee exempt on the debt token: every fill would revert NonZeroFlashFee")
 )
 
+var ErrStateOverridesUnsupported = errors.New(
+	"rebalancer state overrides cannot be combined with exact out-of-band gate and implementation probes")
+
 // berachainCurveParams are the constants frozen into the deployed Berachain
 // CollateralRebalancer + linked CollRebalancerMath (the 155%-wall "champion-v3"
 // construction; read from the deployment source, parity-validated against the shipped

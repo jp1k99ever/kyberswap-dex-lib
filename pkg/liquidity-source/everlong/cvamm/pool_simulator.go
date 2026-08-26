@@ -272,6 +272,13 @@ func (p *PoolSimulator) CurrentInventoryXWad() *big.Int {
 	return p.Extra.XWad.ToBig()
 }
 
+// SnapshotBlockNumber identifies the on-chain snapshot this exact liquidity state came
+// from. Meta pools must not combine it with another venue snapshot from a different
+// block merely because their visible reserve summaries happen to collide.
+func (p *PoolSimulator) SnapshotBlockNumber() uint64 {
+	return p.Info.BlockNumber
+}
+
 // ReservationValuePerShareWad mirrors the deployed ClammAlmAdapter getter against this
 // simulator's CURRENT book. It intentionally recomputes the whole once-floored mark;
 // incrementing a previously floored rvps by a separately floored fee delta can drift by

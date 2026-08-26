@@ -63,6 +63,7 @@ func (b *exactBaseStub) GetTotalReserves() []*big.Int           { return b.total
 func (b *exactBaseStub) IsLiquidityStateExact() bool            { return b.exact }
 func (b *exactBaseStub) InvalidateLiquidityState()              { b.exact = false }
 func (b *exactBaseStub) CurrentInventoryXWad() *big.Int         { return new(big.Int).Set(b.xWad) }
+func (b *exactBaseStub) SnapshotBlockNumber() uint64            { return b.Info.BlockNumber }
 func (b *exactBaseStub) ReservationValuePerShareWad(_, _ *big.Int) (*big.Int, bool) {
 	return new(big.Int).Set(bigWadTest), b.exact
 }
@@ -140,6 +141,20 @@ func TestCoupledFactoryRejectsUnknownAdapterRuntime(t *testing.T) {
 	require.ErrorIs(t, err, ErrUnsupportedAdapter)
 }
 
+func TestCoupledFactoryRejectsCrossBlockBase(t *testing.T) {
+	p := newTestPoolEntity(t)
+	existing := newTestPoolSimulator(t)
+	base := existing.basePool.CloneState().(*everlongcvamm.PoolSimulator)
+	base.Info.BlockNumber = p.BlockNumber + 1
+
+	var se StaticExtra
+	require.NoError(t, json.Unmarshal([]byte(p.StaticExtra), &se))
+	_, err := NewPoolSimulatorWithBases(p,
+		map[string]pool.IPoolSimulator{se.UnderlyingCvamm: base})
+	require.ErrorIs(t, err, ErrInexactBasePool,
+		"matching summaries from different blocks must not attest hidden CVAMM state")
+}
+
 func TestReverseCouplingRequiresExactTransitionShape(t *testing.T) {
 	t.Run("deposit then sell-back", func(t *testing.T) {
 		sim, base := exactCouplingHarness(t)
@@ -195,7 +210,8 @@ func TestBasePoolCoupling(t *testing.T) {
 	// track both at head
 	tracked, err := NewPoolTracker(cfg, client).GetNewPoolState(ctx, pools[0], pool.GetNewPoolStateParams{})
 	require.NoError(t, err)
-	cvammTracked, err := everlongcvamm.NewPoolTracker(cvammCfg, client).GetNewPoolState(ctx, cvammPools[0], pool.GetNewPoolStateParams{})
+	cvammTracked, err := everlongcvamm.NewPoolTracker(cvammCfg, client).GetNewPoolStateAtBlock(
+		ctx, cvammPools[0], new(big.Int).SetUint64(tracked.BlockNumber))
 	require.NoError(t, err)
 
 	// live-curve overlay: the CR floor answers on the deployed impl and must land in Extra
@@ -437,7 +453,8 @@ func TestCloneIsolatesBasePool(t *testing.T) {
 		ALMs: []everlongcvamm.ALMConfig{{Address: se.UnderlyingCvamm}}}
 	cvammPools, _, err := everlongcvamm.NewPoolsListUpdater(cvammCfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
-	cvammTracked, err := everlongcvamm.NewPoolTracker(cvammCfg, client).GetNewPoolState(ctx, cvammPools[0], pool.GetNewPoolStateParams{})
+	cvammTracked, err := everlongcvamm.NewPoolTracker(cvammCfg, client).GetNewPoolStateAtBlock(
+		ctx, cvammPools[0], new(big.Int).SetUint64(tracked.BlockNumber))
 	require.NoError(t, err)
 	base, err := everlongcvamm.NewPoolSimulator(cvammTracked)
 	require.NoError(t, err)

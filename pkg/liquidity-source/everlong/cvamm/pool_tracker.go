@@ -44,6 +44,14 @@ func (t *PoolTracker) GetNewPoolState(ctx context.Context, p entity.Pool,
 
 func (t *PoolTracker) GetNewPoolStateWithOverrides(ctx context.Context, p entity.Pool,
 	params pool.GetNewPoolStateWithOverridesParams) (entity.Pool, error) {
+	// The implementation slot, realized-variance slot and hook runtime are deliberately
+	// read outside Multicall3 at the snapshot block. go-ethereum state overrides do not
+	// apply to those raw probes, so accepting any non-empty override set would splice two
+	// possible worlds into one entity. Refuse the composite snapshot rather than expose a
+	// first quote whose fee/code/gates were never jointly observed.
+	if len(params.Overrides) != 0 {
+		return p, ErrStateOverridesUnsupported
+	}
 	return t.getNewPoolState(ctx, p, params.Overrides)
 }
 

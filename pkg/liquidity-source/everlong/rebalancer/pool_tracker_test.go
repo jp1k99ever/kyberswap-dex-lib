@@ -8,14 +8,26 @@ import (
 
 	"github.com/KyberNetwork/ethrpc"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient/gethclient"
 	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/require"
 
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/entity"
 	everlongcvamm "github.com/KyberNetwork/kyberswap-dex-lib/pkg/liquidity-source/everlong/cvamm"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/test"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
+
+func TestStateOverridesFailClosed(t *testing.T) {
+	original := entity.Pool{Address: "0x0000000000000000000000000000000000000001"}
+	got, err := (&PoolTracker{}).GetNewPoolStateWithOverrides(context.Background(), original,
+		pool.GetNewPoolStateWithOverridesParams{Overrides: map[common.Address]gethclient.OverrideAccount{
+			common.HexToAddress(original.Address): {},
+		}})
+	require.ErrorIs(t, err, ErrStateOverridesUnsupported)
+	require.Equal(t, original, got)
+}
 
 func berachainTestConfig() *Config {
 	return &Config{
@@ -80,8 +92,10 @@ func TestLiveListTrackQuote(t *testing.T) {
 	cvPools, _, err := everlongcvamm.NewPoolsListUpdater(cvCfg, client).GetNewPools(context.Background(), nil)
 	require.NoError(t, err)
 	require.Len(t, cvPools, 1)
-	cvTracked, err := everlongcvamm.NewPoolTracker(cvCfg, client).GetNewPoolState(
-		context.Background(), cvPools[0], pool.GetNewPoolStateParams{})
+	// Exact meta coupling requires both snapshots at the same block; a second "latest"
+	// call can cross a live Berachain block boundary even when no venue state moved.
+	cvTracked, err := everlongcvamm.NewPoolTracker(cvCfg, client).GetNewPoolStateAtBlock(
+		context.Background(), cvPools[0], new(big.Int).SetUint64(p.BlockNumber))
 	require.NoError(t, err)
 	base, err := everlongcvamm.NewPoolSimulator(cvTracked)
 	require.NoError(t, err)

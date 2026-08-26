@@ -20,6 +20,16 @@ import (
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/test"
 )
 
+func TestStateOverridesFailClosed(t *testing.T) {
+	original := entity.Pool{Address: "0x0000000000000000000000000000000000000001"}
+	got, err := (&PoolTracker{}).GetNewPoolStateWithOverrides(context.Background(), original,
+		pool.GetNewPoolStateWithOverridesParams{Overrides: map[common.Address]gethclient.OverrideAccount{
+			common.HexToAddress(original.Address): {},
+		}})
+	require.ErrorIs(t, err, ErrStateOverridesUnsupported)
+	require.Equal(t, original, got)
+}
+
 // Live pipeline test: lister -> tracker -> simulator against a real deployment, with a
 // wei-exact parity gate against the venue itself. Env-gated so the suite stays hermetic:
 //

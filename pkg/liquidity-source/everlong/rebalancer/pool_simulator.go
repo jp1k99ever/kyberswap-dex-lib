@@ -80,7 +80,8 @@ func NewPoolSimulatorWithBases(p entity.Pool, basePoolMap map[string]pool.IPoolS
 	}
 	exactBase, ok := base.(exactLiquidityBase)
 	if !ok || !strings.EqualFold(base.GetAddress(), sim.StaticExtra.UnderlyingCvamm) ||
-		!exactBase.IsLiquidityStateExact() {
+		!exactBase.IsLiquidityStateExact() ||
+		exactBase.SnapshotBlockNumber() != sim.Info.BlockNumber {
 		return nil, ErrInexactBasePool
 	}
 	if !sim.hasExactCouplingSnapshot() {
@@ -173,6 +174,10 @@ func (s *PoolSimulator) SetBasePool(base pool.IPoolSimulator) {
 		s.couplingExact = false
 		return
 	}
+	if exactBase.SnapshotBlockNumber() != s.Info.BlockNumber {
+		s.couplingExact = false
+		return
+	}
 	if _, _, ok := exactBaseBook(base); !ok {
 		s.couplingExact = false
 		return
@@ -230,6 +235,7 @@ type exactLiquidityBase interface {
 	InvalidateLiquidityState()
 	ReservationValuePerShareWad(reservationPriceWad, totalSupply *big.Int) (*big.Int, bool)
 	CurrentInventoryXWad() *big.Int
+	SnapshotBlockNumber() uint64
 }
 
 func (s *PoolSimulator) hasExactCouplingSnapshot() bool {
