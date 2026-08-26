@@ -73,12 +73,12 @@ func TestRuntimeCodeHashMatchesExactRuntime(t *testing.T) {
 func TestConfigFingerprintCoversEveryStaticInput(t *testing.T) {
 	base := *berachainTestConfig()
 	cp := berachainCurveParams()
-	hash := func(cfg Config, curve CurveParams) string {
-		got, err := (&PoolsListUpdater{config: &cfg}).configFingerprint(curve)
-		require.NoError(t, err)
-		return got
+	hash := func(cfg Config, curve CurveParams) (string, error) {
+		return (&PoolsListUpdater{config: &cfg}).configFingerprint(
+			curve, base.Stable, base.Volatile)
 	}
-	want := hash(base, cp)
+	want, err := hash(base, cp)
+	require.NoError(t, err)
 	mutations := []func(*Config, *CurveParams){
 		func(c *Config, _ *CurveParams) { c.DexID += "-changed" },
 		func(c *Config, _ *CurveParams) { c.ChainID++ },
@@ -93,8 +93,23 @@ func TestConfigFingerprintCoversEveryStaticInput(t *testing.T) {
 	for i, mutate := range mutations {
 		cfg, curve := base, cp
 		mutate(&cfg, &curve)
-		require.NotEqual(t, want, hash(cfg, curve), "mutation %d was missing from the cursor", i)
+		got, err := hash(cfg, curve)
+		require.True(t, err != nil || got != want, "mutation %d was missing from the cursor", i)
 	}
+
+	// Stable/Volatile are optional assertions. Omitting an assertion that agreed with
+	// the on-chain pair does not change the semantic profile; the derived pair remains
+	// in the digest and therefore still protects a persisted pool.
+	withoutAssertions := base
+	withoutAssertions.Stable, withoutAssertions.Volatile = "", ""
+	got, err := hash(withoutAssertions, cp)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+
+	negativeGas := base
+	negativeGas.GasLeverage = -1
+	_, err = hash(negativeGas, cp)
+	require.ErrorIs(t, err, ErrInvalidPoolProfile)
 }
 
 func TestRuntimeLinksLibrary(t *testing.T) {

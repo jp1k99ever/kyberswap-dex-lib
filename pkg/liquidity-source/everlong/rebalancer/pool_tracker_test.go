@@ -29,6 +29,80 @@ func TestStateOverridesFailClosed(t *testing.T) {
 	require.Equal(t, original, got)
 }
 
+func TestTrackerRejectsStaleConfiguredProfileBeforeRPC(t *testing.T) {
+	p := newTestPoolEntity(t)
+	var se StaticExtra
+	require.NoError(t, json.Unmarshal([]byte(p.StaticExtra), &se))
+	client := ethrpc.New("http://127.0.0.1:1")
+
+	withoutTokenAssertions := *berachainTestConfig()
+	withoutTokenAssertions.Stable, withoutTokenAssertions.Volatile = "", ""
+	require.NoError(t, validateTrackerProfile(p, &se, &withoutTokenAssertions),
+		"the pair is derived on-chain; matching config assertions are optional")
+
+	changedCurve := berachainCurveParams()
+	changedCurve.HJoin = new(big.Int).Add(changedCurve.HJoin, big.NewInt(1))
+	for _, tc := range []struct {
+		name string
+		cfg  *Config
+	}{
+		{"nil config", nil},
+		{"changed dex", func() *Config { c := *berachainTestConfig(); c.DexID += "-old"; return &c }()},
+		{"changed chain", func() *Config { c := *berachainTestConfig(); c.ChainID++; return &c }()},
+		{"rotated rebalancer", func() *Config {
+			c := *berachainTestConfig()
+			c.Rebalancer = "0x00000000000000000000000000000000000000ff"
+			return &c
+		}()},
+		{"changed stable assertion", func() *Config {
+			c := *berachainTestConfig()
+			c.Stable = "0x00000000000000000000000000000000000000ff"
+			return &c
+		}()},
+		{"changed volatile assertion", func() *Config {
+			c := *berachainTestConfig()
+			c.Volatile = "0x00000000000000000000000000000000000000ff"
+			return &c
+		}()},
+		{"changed math", func() *Config {
+			c := *berachainTestConfig()
+			c.Math = "0x00000000000000000000000000000000000000ff"
+			return &c
+		}()},
+		{"changed curve", func() *Config {
+			c := *berachainTestConfig()
+			c.CurveParams = &changedCurve
+			return &c
+		}()},
+		{"changed leverage gas", func() *Config {
+			c := *berachainTestConfig()
+			c.GasLeverage = 1
+			return &c
+		}()},
+		{"negative deleverage gas", func() *Config {
+			c := *berachainTestConfig()
+			c.GasDeleverage = -1
+			return &c
+		}()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tracker := NewPoolTracker(tc.cfg, client)
+			_, err := tracker.GetNewPoolState(context.Background(), p, pool.GetNewPoolStateParams{})
+			require.ErrorIs(t, err, ErrInvalidPoolProfile,
+				"profile drift must fail before the deliberately unreachable RPC endpoint")
+			_, _, err = tracker.LazyNewPoolState(context.Background(), p, pool.GetNewPoolStateParams{})
+			require.ErrorIs(t, err, ErrInvalidPoolProfile)
+		})
+	}
+
+	unpinned := p
+	unpinned.BlockNumber = 0
+	_, err := NewPoolTracker(berachainTestConfig(), client).GetNewPoolState(
+		context.Background(), unpinned, pool.GetNewPoolStateParams{})
+	require.ErrorIs(t, err, ErrInvalidPoolProfile,
+		"an unpinned cached entity must fail before the unreachable RPC endpoint")
+}
+
 func berachainTestConfig() *Config {
 	return &Config{
 		DexID:      DexType,

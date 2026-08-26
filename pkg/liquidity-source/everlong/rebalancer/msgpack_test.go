@@ -67,6 +67,8 @@ func TestMsgpackRoundTrip(t *testing.T) {
 	assert.Equal(t, sim.StaticExtra.SwapperCodeHash, decoded.StaticExtra.SwapperCodeHash)
 	assert.Equal(t, sim.StaticExtra.MathCodeHash, decoded.StaticExtra.MathCodeHash)
 	assert.Equal(t, sim.StaticExtra.VolatileToken, decoded.StaticExtra.VolatileToken)
+	assert.Equal(t, sim.StaticExtra.ConfigHash, decoded.StaticExtra.ConfigHash)
+	assert.Equal(t, sim.StaticExtra.ProfileHash, decoded.StaticExtra.ProfileHash)
 	assert.Equal(t, sim.StaticExtra.UnderlyingDepositAllowlist,
 		decoded.StaticExtra.UnderlyingDepositAllowlist)
 
@@ -110,6 +112,24 @@ func TestCurrentFormatMsgpackProfileCorruptionFailsClosed(t *testing.T) {
 			want: ErrInvalidPoolProfile,
 			mutate: func(sim *PoolSimulator) {
 				sim.Info.Tokens[0], sim.Info.Tokens[1] = sim.Info.Tokens[1], sim.Info.Tokens[0]
+			},
+		},
+		{
+			name: "stable identity and matching pool token",
+			want: ErrInvalidPoolProfile,
+			mutate: func(sim *PoolSimulator) {
+				changed := "0x00000000000000000000000000000000000000ff"
+				sim.StaticExtra.StableToken = changed
+				sim.Info.Tokens[0] = changed
+			},
+		},
+		{
+			name: "swapper and matching pool address",
+			want: ErrInvalidPoolProfile,
+			mutate: func(sim *PoolSimulator) {
+				changed := "0x00000000000000000000000000000000000000ff"
+				sim.StaticExtra.Swapper = changed
+				sim.Info.Address = changed
 			},
 		},
 		{

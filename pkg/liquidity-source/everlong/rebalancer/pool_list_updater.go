@@ -77,10 +77,6 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 	if err != nil {
 		return nil, nil, err
 	}
-	configHash, err := u.configFingerprint(curveParams)
-	if err != nil {
-		return nil, nil, err
-	}
 
 	var (
 		collVault, swapper, positionManager, managedVault gethcommon.Address
@@ -227,6 +223,10 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 	if err != nil {
 		return nil, nil, err
 	}
+	configHash, err := u.configFingerprint(curveParams, stable, volatile)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// The swapper flash-mints the debt token on every fill and reverts NonZeroFlashFee
 	// unless it is fee-exempt — an exemption keyed by msg.sender on the token, so it is
@@ -256,7 +256,7 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		return nil, nil, err
 	}
 
-	staticExtra, err := json.Marshal(StaticExtra{
+	staticProfile := StaticExtra{
 		Rebalancer:                 strings.ToLower(u.config.Rebalancer),
 		Swapper:                    hexutil.Encode(swapper[:]),
 		CollVault:                  hexutil.Encode(collVault[:]),
@@ -281,7 +281,15 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		DebtGasCompensation:        gasCompensation,
 		ManagedVault:               hexutil.Encode(managedVault[:]),
 		VolatileToken:              volatile,
-	})
+		DexID:                      u.config.DexID,
+		ChainID:                    u.config.ChainID,
+		ConfigHash:                 configHash,
+	}
+	staticProfile.ProfileHash, err = staticProfileFingerprint(&staticProfile)
+	if err != nil {
+		return nil, nil, err
+	}
+	staticExtra, err := json.Marshal(staticProfile)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -336,23 +344,8 @@ func (m Metadata) matches(swapper, managedVault, implementation, underlyingDepos
 		m.ConfigHash == configHash
 }
 
-func (u *PoolsListUpdater) configFingerprint(cp CurveParams) (string, error) {
-	raw, err := json.Marshal(struct {
-		DexID, Rebalancer, Stable, Volatile, Math string
-		ChainID                                   uint
-		Curve                                     CurveParams
-		GasLeverage, GasDeleverage                int64
-	}{
-		DexID: u.config.DexID, ChainID: uint(u.config.ChainID),
-		Rebalancer: strings.ToLower(u.config.Rebalancer),
-		Stable:     strings.ToLower(u.config.Stable), Volatile: strings.ToLower(u.config.Volatile),
-		Math: strings.ToLower(u.config.Math), Curve: cp,
-		GasLeverage: u.config.GasLeverage, GasDeleverage: u.config.GasDeleverage,
-	})
-	if err != nil {
-		return "", err
-	}
-	return crypto.Keccak256Hash(raw).Hex(), nil
+func (u *PoolsListUpdater) configFingerprint(cp CurveParams, stable, volatile string) (string, error) {
+	return rebalancerConfigFingerprint(u.config, cp, stable, volatile)
 }
 
 // verifySwapperIdentity derives the pair from the deployed swapper and proves the

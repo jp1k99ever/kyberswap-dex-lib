@@ -2,6 +2,8 @@ package everlongrebalancer
 
 import (
 	"math/big"
+
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 type StaticExtra struct {
@@ -63,6 +65,18 @@ type StaticExtra struct {
 	// deliberately appended to preserve the field order of already-encoded msgpack
 	// structs while giving the simulator an immutable token1 identity to attest.
 	VolatileToken string `json:"volatileToken,omitempty"`
+	// ConfigHash binds this persisted profile to the exact source configuration that
+	// listed it. DexID and ChainID are carried alongside it so a decoded simulator can
+	// recompute the digest without access to pool-service configuration. These fields are
+	// appended to preserve the order of previously encoded msgpack structs.
+	DexID      string              `json:"dexId,omitempty"`
+	ChainID    valueobject.ChainID `json:"chainId,omitempty"`
+	ConfigHash string              `json:"configHash,omitempty"`
+	// ProfileHash seals every execution-critical StaticExtra field (including the
+	// config digest and resolved contract graph). It catches cache cross-wires where the
+	// matching PoolInfo field is mutated alongside StaticExtra and plain equality checks
+	// would otherwise still pass.
+	ProfileHash string `json:"profileHash,omitempty"`
 }
 
 // Extra is the per-refresh vault snapshot the simulator prices from.

@@ -356,6 +356,9 @@ func (t *PoolTracker) LazyNewPoolState(ctx context.Context, p entity.Pool,
 	if err := json.Unmarshal([]byte(p.StaticExtra), &staticExtra); err != nil {
 		return nil, nil, err
 	}
+	if err := validateTrackerProfile(p, &staticExtra, t.config); err != nil {
+		return nil, nil, err
+	}
 	rd := newRPCState()
 	req := pool.LazyRequest{Request: t.ethrpcClient.NewRequest().SetContext(ctx)}
 	addRPCCalls(func(c *ethrpc.Call, o []any) { req.AddCall(c, o) }, &staticExtra, rd)
@@ -378,6 +381,9 @@ func (t *PoolTracker) getNewPoolState(ctx context.Context, p entity.Pool,
 	overrides map[common.Address]gethclient.OverrideAccount) (entity.Pool, error) {
 	var staticExtra StaticExtra
 	if err := json.Unmarshal([]byte(p.StaticExtra), &staticExtra); err != nil {
+		return p, err
+	}
+	if err := validateTrackerProfile(p, &staticExtra, t.config); err != nil {
 		return p, err
 	}
 

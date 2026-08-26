@@ -26,11 +26,12 @@ func TestLazyClosureToleratesOptionalReverts(t *testing.T) {
 	var se StaticExtra
 	require.NoError(t, json.Unmarshal([]byte(p.StaticExtra), &se))
 	se.UnderlyingDepositAllowlist = "0x00000000000000000000000000000000000000a1"
+	sealTestStaticProfile(t, &se)
 	raw, err := json.Marshal(se)
 	require.NoError(t, err)
 	p.StaticExtra = string(raw)
 
-	tracker := NewPoolTracker(&Config{}, ethrpc.New("http://127.0.0.1:1"))
+	tracker := NewPoolTracker(berachainTestConfig(), ethrpc.New("http://127.0.0.1:1"))
 	lazy, apply, err := tracker.LazyNewPoolState(context.Background(), p, pool.GetNewPoolStateParams{})
 	require.NoError(t, err)
 

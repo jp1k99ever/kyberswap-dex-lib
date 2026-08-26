@@ -106,7 +106,7 @@ func newTestPoolEntity(t *testing.T) entity.Pool {
 	state.AlmResvPriceWad = bi(t, "638569604086845466156025208308271")
 	extraBytes, err := json.Marshal(state)
 	require.NoError(t, err)
-	staticExtraBytes, err := json.Marshal(StaticExtra{
+	staticExtra := StaticExtra{
 		Rebalancer:                 "0xa6b848d899189d263a9398f1df4534af7b06d6b3",
 		Swapper:                    "0x27775ec38e2b394738b73c0d25f63e20063df054",
 		CollVault:                  "0x9e7f375c351a251e80eb89ad33ca62b270fd9b4a",
@@ -128,7 +128,14 @@ func newTestPoolEntity(t *testing.T) entity.Pool {
 		ManagedVault:               "0x0000000000000000000000000000000000000024",
 		CurveParams:                berachainCurveParams(),
 		VolatileToken:              testWBTC,
-	})
+		DexID:                      DexType,
+		ChainID:                    valueobject.ChainIDBerachain,
+	}
+	staticExtra.ConfigHash, err = staticConfigFingerprint(&staticExtra)
+	require.NoError(t, err)
+	staticExtra.ProfileHash, err = staticProfileFingerprint(&staticExtra)
+	require.NoError(t, err)
+	staticExtraBytes, err := json.Marshal(staticExtra)
 	require.NoError(t, err)
 
 	return entity.Pool{
@@ -144,6 +151,13 @@ func newTestPoolEntity(t *testing.T) entity.Pool {
 		Extra:       string(extraBytes),
 		StaticExtra: string(staticExtraBytes),
 	}
+}
+
+func sealTestStaticProfile(t *testing.T, se *StaticExtra) {
+	t.Helper()
+	var err error
+	se.ProfileHash, err = staticProfileFingerprint(se)
+	require.NoError(t, err)
 }
 
 func mutateTestStaticExtra(t *testing.T, p *entity.Pool, mutate func(*StaticExtra)) {

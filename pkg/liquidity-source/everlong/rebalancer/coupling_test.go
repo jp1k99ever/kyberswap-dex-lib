@@ -103,6 +103,7 @@ func (b *exactBaseStub) ApplyLiquidityDelta(shares, supply, used0, used1 *big.In
 func exactCouplingHarness(t *testing.T) (*PoolSimulator, *exactBaseStub) {
 	sim := newTestPoolSimulator(t)
 	sim.StaticExtra.UnderlyingCvamm = "0x000000000000000000000000000000000000c0de"
+	sealTestStaticProfile(t, &sim.StaticExtra)
 	sim.Extra.AlmIdleStable = new(big.Int)
 	sim.Extra.AlmIdleVolatile = new(big.Int)
 	sim.Extra.RvpsWad = new(big.Int).Set(bigWadTest)
