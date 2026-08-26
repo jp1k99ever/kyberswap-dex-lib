@@ -13,7 +13,7 @@ type Config struct {
 	// PSM is the PermissionlessPSM contract (also the swap entrypoint and, for the
 	// deposit direction, the approval target).
 	PSM string `json:"psm"`
-	// Stables must contain exactly the PSM's sole listed stable (HONEY on Berachain).
+	// Stables must contain exactly the PSM's sole listed stable (Bera USD/BUSD on Berachain).
 	Stables []string `json:"stables"`
 	// FeeCaller is REQUIRED and must be the deployed direct EverlongPsmAdapter address
 	// that calls the PSM. Its reviewed runtime is attested at the snapshot block. A

@@ -64,7 +64,7 @@ func TestDifferentialFuzz(t *testing.T) {
 	require.NoError(t, err)
 	psmCfg := &everlongpsm.Config{DexID: everlongpsm.DexType, ChainID: valueobject.ChainIDBerachain,
 		PSM:     forktest.PSM,
-		Stables: []string{forktest.HONEY}, FeeCaller: psmAdapter.Hex()}
+		Stables: []string{forktest.BUSD}, FeeCaller: psmAdapter.Hex()}
 	psmPools, _, err := everlongpsm.NewPoolsListUpdater(psmCfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
 	require.Len(t, psmPools, 1)

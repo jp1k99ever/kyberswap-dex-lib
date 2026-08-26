@@ -290,28 +290,28 @@ func startAnvil(t *testing.T, forkURL string) (string, func()) {
 
 // Berachain fixtures shared by the parity tests.
 const (
-	NECT  = "0x1cE0a25D13CE4d52071aE7e02Cf1F6606F4C79d3"
-	WBTC  = "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c"
-	HONEY = "0xFCBD14DC51f0A4d49d5E53C2E0950e0bC26d0Dce"
-	PSM   = "0x0999417c0f9ded4356B099bcC83A16437B841323"
-	// Whale holds WBTC and HONEY; NECT is minted 1:1 through the PSM from its HONEY.
+	NECT = "0x1cE0a25D13CE4d52071aE7e02Cf1F6606F4C79d3"
+	WBTC = "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c"
+	BUSD = "0xFCBD14DC51f0A4d49d5E53C2E0950e0bC26d0Dce"
+	PSM  = "0x0999417c0f9ded4356B099bcC83A16437B841323"
+	// Whale holds WBTC and BUSD; NECT is minted 1:1 through the PSM from its BUSD.
 	Whale = "0x24147243f9c08d835C218Cda1e135f8dFD0517D0"
 )
 
-// MintNECT deposits HONEY from the whale into the PSM so the whale holds `amount` NECT
+// MintNECT deposits BUSD from the whale into the PSM so the whale holds `amount` NECT
 // (plus the PSM's fee), leaving the PSM's mint room reduced accordingly — call it
 // BEFORE tracking when a test quotes the PSM.
 func (f *Fork) MintNECT(t *testing.T, amount *big.Int) {
 	t.Helper()
 	f.Impersonate(t, Whale)
 	psm := common.HexToAddress(PSM)
-	honey := common.HexToAddress(HONEY)
+	busd := common.HexToAddress(BUSD)
 	// gross = amount / (1 - fee) with a little slack; the PSM mints net of its fee
 	gross := new(big.Int).Mul(amount, big.NewInt(101))
 	gross.Div(gross, big.NewInt(100))
-	f.ExecTx(t, Whale, honey, PackUints("0x095ea7b3", psm.Big(), gross))
+	f.ExecTx(t, Whale, busd, PackUints("0x095ea7b3", psm.Big(), gross))
 	// deposit(address stable, uint256 stableAmount, address receiver, uint16 maxFeePercentage)
-	f.ExecTx(t, Whale, psm, PackUints("0xe8eda9df", honey.Big(), gross, common.HexToAddress(Whale).Big(), big.NewInt(65535)))
+	f.ExecTx(t, Whale, psm, PackUints("0xe8eda9df", busd.Big(), gross, common.HexToAddress(Whale).Big(), big.NewInt(65535)))
 	require.True(t, f.Balance(t, common.HexToAddress(NECT), common.HexToAddress(Whale)).Cmp(amount) >= 0)
 }
 

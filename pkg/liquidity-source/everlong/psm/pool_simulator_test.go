@@ -68,7 +68,7 @@ func simWith(t *testing.T, availMint, minted, reserve, entryBp, exitBp string, p
 	return sim
 }
 
-// The live pair is NECT/HONEY. Both are 18 decimals, so wadOffset is 1 and amounts pass
+// The live pair is NECT/BUSD. Both are 18 decimals, so wadOffset is 1 and amounts pass
 // through unscaled. Every other test here uses a 6-decimal stable, so this is the only
 // one covering what is actually deployed.
 func TestEqualDecimalsUnscaled(t *testing.T) {
@@ -91,7 +91,7 @@ func TestEqualDecimalsUnscaled(t *testing.T) {
 	s, err := NewPoolSimulator(p)
 	require.NoError(t, err)
 
-	// deposit: 100 HONEY -> gross 100e18, fee ceil(100e18*5/1e4) = 5e16, out 99.95
+	// deposit: 100 BUSD -> gross 100e18, fee ceil(100e18*5/1e4) = 5e16, out 99.95
 	res, err := quote(t, s, unitStable, unitDebt, "100000000000000000000")
 	require.NoError(t, err)
 	require.Equal(t, "99950000000000000000", res.TokenAmountOut.Amount.String())

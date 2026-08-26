@@ -64,7 +64,7 @@ type Extra struct {
 	// Per-stable book; the redeem burn cannot exceed it (the chain underflows past it).
 	DebtTokenMinted *big.Int `json:"minted"`
 	// Stable payable right now. A nonzero yield hook is unsupported, so this is idle
-	// HONEY held directly by the PSM and can be replayed exactly.
+	// BUSD held directly by the PSM and can be replayed exactly.
 	AvailableReserve *big.Int `json:"reserve"`
 }
 

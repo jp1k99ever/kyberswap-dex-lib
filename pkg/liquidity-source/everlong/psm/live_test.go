@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	livePSM   = "0x0999417c0f9ded4356B099bcC83A16437B841323"
-	liveHoney = "0xFCBD14DC51f0A4d49d5E53C2E0950e0bC26d0Dce"
-	liveNECT  = "0x1cE0a25D13CE4d52071aE7e02Cf1F6606F4C79d3"
+	livePSM  = "0x0999417c0f9ded4356B099bcC83A16437B841323"
+	liveBUSD = "0xFCBD14DC51f0A4d49d5E53C2E0950e0bC26d0Dce"
+	liveNECT = "0x1cE0a25D13CE4d52071aE7e02Cf1F6606F4C79d3"
 	// Read-only policy probes only. Neither address is a production adapter config: the
 	// adapter parity test deploys the actual execution contract before listing and binds
 	// FeeCaller to it. The ordinary contract currently pays 5/5; the savings vault is an
@@ -46,13 +46,13 @@ func TestLiveListTrackQuote(t *testing.T) {
 		DexID:     DexType,
 		ChainID:   valueobject.ChainIDBerachain,
 		PSM:       livePSM,
-		Stables:   []string{liveHoney},
+		Stables:   []string{liveBUSD},
 		FeeCaller: liveProductionAdapter(t),
 	}
 
 	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
-	require.Len(t, pools, 1, "HONEY is whitelisted on the deployed PSM")
+	require.Len(t, pools, 1, "BUSD is whitelisted on the deployed PSM")
 
 	tracked, err := NewPoolTracker(cfg, client).GetNewPoolState(ctx, pools[0], pool.GetNewPoolStateParams{})
 	require.NoError(t, err)
@@ -91,8 +91,8 @@ func TestLiveListTrackQuote(t *testing.T) {
 		}
 		t.Fatalf("quote %s->%s failed outside the documented sentinels: %v", tokenIn, tokenOut, err)
 	}
-	quote(stable, debt, big.NewInt(1e18)) // deposit: 1 HONEY -> NECT
-	quote(debt, stable, big.NewInt(1e18)) // redeem: 1 NECT -> HONEY
+	quote(stable, debt, big.NewInt(1e18)) // deposit: 1 BUSD -> NECT
+	quote(debt, stable, big.NewInt(1e18)) // redeem: 1 NECT -> BUSD
 }
 
 func berachainPsmRPCURL() string {
@@ -134,9 +134,9 @@ func TestFeeIsCallerBound(t *testing.T) {
 		entry, exit := new(big.Int), new(big.Int)
 		_, err = client.NewRequest().SetContext(ctx).
 			AddCall(&ethrpc.Call{ABI: psmABI, Target: livePSM, Method: psmMethodFeeBpFor,
-				Params: []any{common.HexToAddress(caller), common.HexToAddress(liveHoney), true}}, []any{&entry}).
+				Params: []any{common.HexToAddress(caller), common.HexToAddress(liveBUSD), true}}, []any{&entry}).
 			AddCall(&ethrpc.Call{ABI: psmABI, Target: livePSM, Method: psmMethodFeeBpFor,
-				Params: []any{common.HexToAddress(caller), common.HexToAddress(liveHoney), false}}, []any{&exit}).
+				Params: []any{common.HexToAddress(caller), common.HexToAddress(liveBUSD), false}}, []any{&exit}).
 			Aggregate()
 		require.NoError(t, err)
 		rates = append(rates, entry.String()+"/"+exit.String())
@@ -153,7 +153,7 @@ func TestListerRejectsEmptyCodeFeeCaller(t *testing.T) {
 	client := ethrpc.New(berachainPsmRPCURL()).
 		SetMulticallContract(common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"))
 	cfg := &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
-		PSM: livePSM, Stables: []string{liveHoney}, FeeCaller: liveEmptyCodeCaller}
+		PSM: livePSM, Stables: []string{liveBUSD}, FeeCaller: liveEmptyCodeCaller}
 
 	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
 	require.ErrorIs(t, err, ErrUnsupportedProfile)
@@ -169,7 +169,7 @@ func TestTrackerStampsBlockNumber(t *testing.T) {
 	client := ethrpc.New(berachainPsmRPCURL()).
 		SetMulticallContract(common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"))
 	cfg := &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
-		PSM: livePSM, Stables: []string{liveHoney}, FeeCaller: liveProductionAdapter(t)}
+		PSM: livePSM, Stables: []string{liveBUSD}, FeeCaller: liveProductionAdapter(t)}
 
 	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
@@ -193,7 +193,7 @@ func TestListerProfileCursor(t *testing.T) {
 	client := ethrpc.New(berachainPsmRPCURL()).
 		SetMulticallContract(common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"))
 	cfg := &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
-		PSM: livePSM, Stables: []string{liveHoney}, FeeCaller: liveProductionAdapter(t)}
+		PSM: livePSM, Stables: []string{liveBUSD}, FeeCaller: liveProductionAdapter(t)}
 
 	u := NewPoolsListUpdater(cfg, client)
 	first, meta, err := u.GetNewPools(ctx, nil)

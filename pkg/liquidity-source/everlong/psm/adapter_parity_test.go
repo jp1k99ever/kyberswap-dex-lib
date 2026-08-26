@@ -32,7 +32,7 @@ func TestAdapterParity(t *testing.T) {
 
 	client := ethrpc.New(f.URL).SetMulticallContract(common.HexToAddress(forktest.Multicall3))
 	cfg := &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
-		PSM: forktest.PSM, Stables: []string{forktest.HONEY},
+		PSM: forktest.PSM, Stables: []string{forktest.BUSD},
 		FeeCaller: adapter.Hex()}
 	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
