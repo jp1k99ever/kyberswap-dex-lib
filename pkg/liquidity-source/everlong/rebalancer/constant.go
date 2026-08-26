@@ -26,6 +26,7 @@ const (
 	cvMethodAssetDecimals             = "assetDecimals"
 	rebalancerMethodPositionManager   = "positionManager"
 	rebalancerMethodManagedVault      = "managedVault"
+	rebalancerMethodMathLibrary       = "mathLibrary"
 	almMethodRvpsWad                  = "reservationValuePerShareWad"
 	cvammMethodReservationPriceWad    = "reservationPriceWad"
 	cvammMethodIdleStable             = "idleStable"

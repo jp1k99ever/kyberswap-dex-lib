@@ -30,6 +30,10 @@ type Metadata struct {
 	// setManagedVault rotation immediately, while every CDP word the tracker reads is
 	// keyed by the vault resolved here — so a rotation has to relist, not just refresh.
 	ManagedVault string `json:"managedVault"`
+	// The UUPS implementation whose linked CollRebalancerMath was attested. A proxy
+	// upgrade changes the executable math even when the swapper and managed vault stay
+	// put, so it must produce a replacement pool with freshly-attested StaticExtra.
+	Implementation string `json:"implementation"`
 }
 
 var _ = poollist.RegisterFactoryCE(DexType, NewPoolsListUpdater)
@@ -165,9 +169,9 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 	}
 
 	// Nothing rotates more quietly than the settlement swapper, and it IS the pool
-	// address: emit a replacement only when it differs from the one last listed.
-	if strings.EqualFold(metadata.Swapper, hexutil.Encode(swapper[:])) &&
-		strings.EqualFold(metadata.ManagedVault, hexutil.Encode(managedVault[:])) {
+	// address. The managed vault changes the state key and the implementation changes the
+	// linked pricing code, so either one must emit a freshly-attested replacement too.
+	if metadata.matches(swapper, managedVault, implementation) {
 		return nil, metadataBytes, nil
 	}
 
@@ -183,6 +187,9 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 	// does not degrade the venue — it reverts the fill. Prove the deployed library
 	// reproduces the local model at the live state before listing anything on it.
 	if err := u.verifyMath(ctx, curveParams); err != nil {
+		return nil, nil, err
+	}
+	if err := u.verifyMathLink(ctx, implementation); err != nil {
 		return nil, nil, err
 	}
 
@@ -211,8 +218,9 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 	}
 
 	newMetadata, err := json.Marshal(Metadata{
-		Swapper:      hexutil.Encode(swapper[:]),
-		ManagedVault: hexutil.Encode(managedVault[:]),
+		Swapper:        hexutil.Encode(swapper[:]),
+		ManagedVault:   hexutil.Encode(managedVault[:]),
+		Implementation: hexutil.Encode(implementation[:]),
 	})
 	if err != nil {
 		return nil, nil, err
@@ -234,6 +242,12 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 			BlockNumber: blockNumber,
 		},
 	}, newMetadata, nil
+}
+
+func (m Metadata) matches(swapper, managedVault, implementation gethcommon.Address) bool {
+	return strings.EqualFold(m.Swapper, hexutil.Encode(swapper[:])) &&
+		strings.EqualFold(m.ManagedVault, hexutil.Encode(managedVault[:])) &&
+		strings.EqualFold(m.Implementation, hexutil.Encode(implementation[:]))
 }
 
 // verifySwapperIdentity derives the pair from the deployed swapper and proves the
@@ -379,6 +393,41 @@ func (u *PoolsListUpdater) verifyMath(ctx context.Context, cp CurveParams) error
 	}
 	if compared == 0 {
 		return ErrMathNotConfigured // nothing nondegenerate answered: the link is unproven
+	}
+	return nil
+}
+
+// verifyMathLink proves identity, while verifyMath above proves behavior. New
+// implementations expose their link directly through mathLibrary(); the deployed legacy
+// implementation predates that getter, so its Solidity PUSH20 relocation is recovered
+// from executable bytecode instead. Either route prevents a different, merely
+// ABI-compatible library from being probed while the rebalancer executes another one.
+func (u *PoolsListUpdater) verifyMathLink(ctx context.Context, implementation gethcommon.Address) error {
+	math := gethcommon.HexToAddress(u.config.Math)
+	if math == (gethcommon.Address{}) {
+		return ErrMathNotConfigured
+	}
+
+	var reported gethcommon.Address
+	req := u.ethrpcClient.NewRequest().SetContext(ctx)
+	req.AddCall(&ethrpc.Call{
+		ABI:    rebalancerABI,
+		Target: hexutil.Encode(implementation[:]),
+		Method: rebalancerMethodMathLibrary,
+	}, []any{&reported})
+	if _, err := req.Call(); err == nil {
+		if reported != math {
+			return ErrMathNotLinked
+		}
+		return nil
+	}
+
+	code, err := u.ethrpcClient.GetETHClient().CodeAt(ctx, implementation, nil)
+	if err != nil {
+		return err
+	}
+	if !runtimeLinksLibrary(code, math) {
+		return ErrMathNotLinked
 	}
 	return nil
 }
