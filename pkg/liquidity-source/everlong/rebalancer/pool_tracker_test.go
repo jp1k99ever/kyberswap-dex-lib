@@ -64,9 +64,13 @@ func TestLiveListTrackQuote(t *testing.T) {
 	client := berachainRPCClient()
 
 	lister := NewPoolsListUpdater(cfg, client)
-	pools, _, err := lister.GetNewPools(context.Background(), nil)
+	pools, metadata, err := lister.GetNewPools(context.Background(), nil)
 	require.NoError(t, err)
 	require.Len(t, pools, 1)
+	again, metadataAgain, err := lister.GetNewPools(context.Background(), metadata)
+	require.NoError(t, err)
+	require.Empty(t, again, "the exact current cursor must not relist every updater run")
+	require.Equal(t, metadata, metadataAgain)
 
 	var staticExtra StaticExtra
 	require.NoError(t, json.Unmarshal([]byte(pools[0].StaticExtra), &staticExtra))

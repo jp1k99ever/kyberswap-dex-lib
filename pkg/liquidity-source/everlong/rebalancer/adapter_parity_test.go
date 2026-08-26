@@ -98,14 +98,7 @@ func TestAdapterParity(t *testing.T) {
 		require.Zero(t, fill.AmountOut.Cmp(q.TokenAmountOut.Amount),
 			"%s: amountOut adapter %s vs fresh quote %s", name, fill.AmountOut, q.TokenAmountOut.Amount)
 		dust := new(big.Int).Sub(fill.AmountUnused, forktest.Remaining(q.RemainingTokenAmountIn.Amount))
-		// Deleverage counts the wei of headroom as consumed (the route must deliver it for
-		// the adapter's hint path to hold) while the swapper refunds what the physical leg
-		// leaves of it — one wei, two when the ALM's idle split lands under the preview.
-		maxDust := big.NewInt(0)
-		if !q.SwapInfo.(SwapInfo).IsLeverage {
-			maxDust = big.NewInt(2)
-		}
-		require.True(t, dust.Sign() >= 0 && dust.Cmp(maxDust) <= 0,
+		require.Zero(t, dust.Sign(),
 			"%s: amountUnused adapter %s vs fresh quote %s", name, fill.AmountUnused, q.RemainingTokenAmountIn.Amount)
 		require.LessOrEqual(t, fill.GasUsed, uint64(q.Gas), "%s: gas used above the quoted estimate", name)
 		require.Zero(t, qAdv.TokenAmountOut.Amount.Cmp(fill.AmountOut),

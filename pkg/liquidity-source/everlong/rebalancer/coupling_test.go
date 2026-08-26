@@ -347,7 +347,7 @@ func TestReverseCouplingAgainstChain(t *testing.T) {
 	// Rebalancer snapshot at the parent block.
 	rd := newRPCState()
 	req := client.NewRequest().SetContext(ctx).SetBlockNumber(parent)
-	addRPCCalls(func(c *ethrpc.Call, o []any) { req.AddCall(c, o) }, &se, rd, nil)
+	addRPCCalls(func(c *ethrpc.Call, o []any) { req.AddCall(c, o) }, &se, rd)
 	_, err = req.TryAggregate()
 	require.NoError(t, err)
 	// the two reads a multicall cannot carry; without them every gate reads closed
@@ -425,7 +425,7 @@ func TestReverseCouplingAgainstChain(t *testing.T) {
 	// the reservation value CollateralRebalancer reads after execution.
 	postRd := newRPCState()
 	postReq := client.NewRequest().SetContext(ctx).SetBlockNumber(receipt.BlockNumber)
-	addRPCCalls(func(c *ethrpc.Call, o []any) { postReq.AddCall(c, o) }, &se, postRd, nil)
+	addRPCCalls(func(c *ethrpc.Call, o []any) { postReq.AddCall(c, o) }, &se, postRd)
 	_, err = postReq.TryAggregate()
 	require.NoError(t, err)
 	postAlmSupply := new(big.Int).Add(coupled.Extra.AlmSupply, minted)

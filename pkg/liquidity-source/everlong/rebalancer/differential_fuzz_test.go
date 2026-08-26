@@ -25,8 +25,8 @@ import (
 // from dust to past the book) drawn at random — each quoted by the real lister/tracker/
 // simulator at the fork head, encoded into the adapter's `data` as the executor would
 // and settled through the deployed adapter. Every fill must return the quoted amountOut
-// and RemainingTokenAmountIn wei for wei (the rebalancer's deleverage may refund up to
-// two wei of headroom, as documented on the adapter). A quote the simulator refuses is
+// and RemainingTokenAmountIn wei for wei, including exact zero-dust deleverage accounting.
+// A quote the simulator refuses is
 // recorded, never executed; the run requires a minimum of settled fills per venue so a
 // simulator that refuses everything cannot pass by silence.
 //
@@ -178,11 +178,7 @@ func TestDifferentialFuzz(t *testing.T) {
 		require.Zero(t, fill.AmountOut.Cmp(q.TokenAmountOut.Amount),
 			"#%d %s: amountOut adapter %s vs quote %s (in %s of %s)", i, v.name, fill.AmountOut, q.TokenAmountOut.Amount, amountIn, tokenIn)
 		dust := new(big.Int).Sub(fill.AmountUnused, forktest.Remaining(q.RemainingTokenAmountIn.Amount))
-		maxDust := big.NewInt(0)
-		if v.name == "rebalancer" && tokenIn == rebPools[0].Tokens[0].Address { // deleverage headroom
-			maxDust = big.NewInt(2)
-		}
-		require.True(t, dust.Sign() >= 0 && dust.Cmp(maxDust) <= 0,
+		require.Zero(t, dust.Sign(),
 			"#%d %s: amountUnused adapter %s vs quote %s", i, v.name, fill.AmountUnused, q.RemainingTokenAmountIn.Amount)
 		settled[v.name]++
 		t.Logf("#%d %s in %s -> out %s unused %s gas %d", i, v.name, amountIn, fill.AmountOut, fill.AmountUnused, fill.GasUsed)

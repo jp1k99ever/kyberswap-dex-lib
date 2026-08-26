@@ -50,6 +50,11 @@ func TestMsgpackRoundTrip(t *testing.T) {
 	assert.Equal(t, sim.Extra.Collateral.String(), decoded.Extra.Collateral.String())
 	assert.Equal(t, sim.Extra.PriceWad.String(), decoded.Extra.PriceWad.String())
 	assert.Equal(t, sim.StaticExtra.Swapper, decoded.StaticExtra.Swapper)
+	assert.Equal(t, sim.StaticExtra.ImplementationCodeHash, decoded.StaticExtra.ImplementationCodeHash)
+	assert.Equal(t, sim.StaticExtra.SwapperCodeHash, decoded.StaticExtra.SwapperCodeHash)
+	assert.Equal(t, sim.StaticExtra.MathCodeHash, decoded.StaticExtra.MathCodeHash)
+	assert.Equal(t, sim.StaticExtra.UnderlyingDepositAllowlist,
+		decoded.StaticExtra.UnderlyingDepositAllowlist)
 
 	// Both sides remain fail-closed until the exact base is wired by the meta factory.
 	params := pool.CalcAmountOutParams{

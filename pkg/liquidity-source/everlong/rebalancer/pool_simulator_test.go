@@ -105,14 +105,18 @@ func newTestPoolEntity(t *testing.T) entity.Pool {
 	extraBytes, err := json.Marshal(state)
 	require.NoError(t, err)
 	staticExtraBytes, err := json.Marshal(StaticExtra{
-		Rebalancer:         "0xa6b848d899189d263a9398f1df4534af7b06d6b3",
-		Swapper:            "0x27775ec38e2b394738b73c0d25f63e20063df054",
-		CollVault:          "0x9e7f375c351a251e80eb89ad33ca62b270fd9b4a",
-		ALM:                "0xbd10884d6b55eda1d872cd5108b8aabdc0c3f6ca",
-		ALMAdapterCodeHash: supportedAlmAdapterCodeHash,
-		UnderlyingCvamm:    "0xf5124f5605ce1e91a7429b837b7dac8f9e5378dd",
-		CvDecimalsOffset:   f.CvDecimalsOffset,
-		CurveParams:        berachainCurveParams(),
+		Rebalancer:                 "0xa6b848d899189d263a9398f1df4534af7b06d6b3",
+		Swapper:                    "0x27775ec38e2b394738b73c0d25f63e20063df054",
+		CollVault:                  "0x9e7f375c351a251e80eb89ad33ca62b270fd9b4a",
+		ALM:                        "0xbd10884d6b55eda1d872cd5108b8aabdc0c3f6ca",
+		ALMAdapterCodeHash:         supportedAlmAdapterCodeHash,
+		ImplementationCodeHash:     supportedRebalancerImplementationCodeHash,
+		SwapperCodeHash:            supportedSettlementSwapperCodeHash,
+		MathCodeHash:               supportedCollRebalancerMathCodeHash,
+		UnderlyingCvamm:            "0xf5124f5605ce1e91a7429b837b7dac8f9e5378dd",
+		UnderlyingDepositAllowlist: "0x39775655b6dac328fed814b732d688b0ff85cbd4",
+		CvDecimalsOffset:           f.CvDecimalsOffset,
+		CurveParams:                berachainCurveParams(),
 	})
 	require.NoError(t, err)
 
@@ -251,6 +255,31 @@ func TestCalcAmountOutComposesQuotes(t *testing.T) {
 	}
 }
 
+func TestDeleverageUsesExactPhysicalNetWithoutDust(t *testing.T) {
+	sim := newTestPoolSimulator(t)
+	amountIn := new(big.Int).Mul(big.NewInt(5), big.NewInt(1e18))
+	result, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
+		TokenAmountIn: pool.TokenAmount{Token: testNECT, Amount: amountIn},
+		TokenOut:      testWBTC,
+	})
+	require.NoError(t, err)
+	si := result.SwapInfo.(SwapInfo)
+	require.False(t, si.IsLeverage)
+	physicalNet := new(big.Int).Sub(si.GrossStableIn, si.StableLeg)
+	require.Equal(t, physicalNet.String(),
+		new(big.Int).Sub(amountIn, result.RemainingTokenAmountIn.Amount).String(),
+		"the route must deliver exactly gross minus the raw ALM's physical stable release")
+
+	next := new(big.Int).Add(si.GrossStableIn, big.NewInt(1))
+	if next.Cmp(sim.curveParams().maxDeleverageIn(&sim.Extra)) <= 0 {
+		stableOut, ok := sim.curveParams().physicalDeleverageStableAt(&sim.Extra, next)
+		if ok {
+			require.True(t, new(big.Int).Sub(next, stableOut).Cmp(amountIn) > 0,
+				"the exact physical-net inversion must choose the largest fitting gross")
+		}
+	}
+}
+
 // TestCalcAmountOutIsPureAndDeterministic: repeated quoting must not drift.
 func TestCalcAmountOutIsPureAndDeterministic(t *testing.T) {
 	sim := newTestPoolSimulator(t)
@@ -351,10 +380,10 @@ func TestExecutionParity(t *testing.T) {
 		"the deleverage cap must exclude the full-debt repayment that reverts on-chain")
 }
 
-// TestLeverageDisabledByBorrowInterest: the rebalancer refuses to originate debt while
-// the CDP charges borrow interest, so leverage must stop quoting — while deleverage,
-// which only retires debt, stays live.
-func TestLeverageDisabledByBorrowInterest(t *testing.T) {
+// TestBothDirectionsDisabledByBorrowInterest: exact execution checks system-wide debt
+// totals as well as this position. Until all of those totals can be projected to quote
+// time, any non-zero rate makes both directions unsupported.
+func TestBothDirectionsDisabledByBorrowInterest(t *testing.T) {
 	sim := newTestPoolSimulator(t)
 	sim.Extra.InterestRate = big.NewInt(1)
 
@@ -362,15 +391,14 @@ func TestLeverageDisabledByBorrowInterest(t *testing.T) {
 		TokenAmountIn: pool.TokenAmount{Token: testWBTC, Amount: big.NewInt(37048)},
 		TokenOut:      testNECT,
 	})
-	require.ErrorIs(t, err, ErrLeverageDisabled)
+	require.ErrorIs(t, err, ErrInterestRateUnsupported)
 
 	net, _ := new(big.Int).SetString("500660601604514559", 10)
-	res, err := sim.CalcAmountOut(pool.CalcAmountOutParams{
+	_, err = sim.CalcAmountOut(pool.CalcAmountOutParams{
 		TokenAmountIn: pool.TokenAmount{Token: testNECT, Amount: net},
 		TokenOut:      testWBTC,
 	})
-	require.NoError(t, err, "deleverage only retires debt and must stay available")
-	require.True(t, res.TokenAmountOut.Amount.Sign() > 0)
+	require.ErrorIs(t, err, ErrInterestRateUnsupported)
 }
 
 // TestMaxLeverageLotMatchesVenueBoundary pins the physical-CR bound against the venue

@@ -14,6 +14,13 @@ const (
 	// rounding is part of the reservation-value formula, so another implementation is
 	// not compatible merely because it exposes the same selectors.
 	supportedAlmAdapterCodeHash = "0xc300573eb8b49ef3a934e5ce4a47d18436da1b75e037fbd4299b38a4a7b5d182"
+	// Exact runtime identities of the verified Berachain leverage stack. ABI
+	// compatibility is insufficient here: all three contracts participate in quote or
+	// settlement semantics, so an upgrade/rotation is unsupported until its runtime is
+	// deliberately reviewed and added to the allowlist.
+	supportedRebalancerImplementationCodeHash = "0xfd76fc378af1b9b5832f4e28789fccadaee99ae0c0925366e25b640815b7e461"
+	supportedSettlementSwapperCodeHash        = "0x6398fbe712b4d627a66c3d9c5cc1f373921f773b6a1d08a367ce66b489cc3683"
+	supportedCollRebalancerMathCodeHash       = "0x22429323e67d86bd0b4b3980d2464b640247078862f362aaa47e42849a2cc4ed"
 
 	rebalancerMethodCollVault         = "collVault"
 	rebalancerMethodPhysicalCrFloor   = "PHYSICAL_CR_FLOOR_WAD"
@@ -36,6 +43,7 @@ const (
 	cvammMethodReservationPriceWad    = "reservationPriceWad"
 	cvammMethodIdleStable             = "idleStable"
 	cvammMethodIdleVolatile           = "idleVolatile"
+	cvammMethodDepositAllowlist       = "depositAllowlist"
 	boMethodCore                      = "CORE"
 	coreMethodCcr                     = "CCR"
 	pmMethodEntireSystemBalances      = "getEntireSystemBalances"
@@ -86,28 +94,34 @@ const (
 )
 
 var (
-	ErrInvalidToken        = errors.New("invalid token")
-	ErrInvalidAmountIn     = errors.New("invalid amount in")
-	ErrNotPriceable        = errors.New("vault state is not locally priceable (degenerate region)")
-	ErrZeroAmountOut       = errors.New("zero amount out")
-	ErrSwapRejected        = errors.New("the vault rejects this fill")
-	ErrLeverageDisabled    = errors.New("leverage is disabled: the CDP has borrow interest enabled")
-	ErrNoCurveParams       = errors.New("no curve params for this chain — the deployed rebalancer's constants are required")
-	ErrInvalidCurveParams  = errors.New("invalid curve params")
-	ErrUnderlyingCvamm     = errors.New("adapter alm() did not resolve the underlying CvammALM")
-	ErrUnsupportedAdapter  = errors.New("unsupported ALM adapter runtime code")
-	ErrMissingBasePool     = errors.New("underlying everlong-cvamm base pool absent — refusing an uncoupled simulator")
-	ErrInexactBasePool     = errors.New("underlying everlong-cvamm base pool cannot replay liquidity changes exactly")
-	ErrInexactCoupledState = errors.New("coupled state is not execution-exact")
-	ErrUnattestedReference = errors.New("the ALM reference-oracle gate is no longer attested after a base price move")
-	ErrMathNotConfigured   = errors.New("config.Math is unset, not an address, or does not answer deleverageQuote")
-	ErrInvalidSnapshotWord = errors.New("invalid snapshot value")
-	ErrVenueGateClosed     = errors.New("the venue would revert this direction")
-	ErrSwapperIdentity     = errors.New("the settlement swapper does not belong to the configured rebalancer, or its pair disagrees with config")
-	ErrMathMismatch        = errors.New("the deployed CollRebalancerMath disagrees with the local model")
-	ErrMathNotLinked       = errors.New("the rebalancer implementation does not link the configured CollRebalancerMath")
-	ErrGateDiscovery       = errors.New("a gate pointer the verified deployment exposes did not resolve")
-	ErrFlashFeeNotExempt   = errors.New("the swapper is not flash-fee exempt on the debt token: every fill would revert NonZeroFlashFee")
+	ErrInvalidToken            = errors.New("invalid token")
+	ErrInvalidAmountIn         = errors.New("invalid amount in")
+	ErrNotPriceable            = errors.New("vault state is not locally priceable (degenerate region)")
+	ErrZeroAmountOut           = errors.New("zero amount out")
+	ErrSwapRejected            = errors.New("the vault rejects this fill")
+	ErrInterestRateUnsupported = errors.New("the CDP has borrow interest enabled: exact system-wide projection is unsupported")
+	// Retained for callers that matched the older leverage-only failure. Non-zero
+	// interest now fails closed in both directions.
+	ErrLeverageDisabled          = ErrInterestRateUnsupported
+	ErrNoCurveParams             = errors.New("no curve params for this chain — the deployed rebalancer's constants are required")
+	ErrInvalidCurveParams        = errors.New("invalid curve params")
+	ErrUnderlyingCvamm           = errors.New("adapter alm() did not resolve the underlying CvammALM")
+	ErrUnsupportedAdapter        = errors.New("unsupported ALM adapter runtime code")
+	ErrUnsupportedImplementation = errors.New("unsupported rebalancer implementation runtime code")
+	ErrUnsupportedSwapper        = errors.New("unsupported settlement swapper runtime code")
+	ErrUnsupportedMath           = errors.New("unsupported CollRebalancerMath runtime code")
+	ErrMissingBasePool           = errors.New("underlying everlong-cvamm base pool absent — refusing an uncoupled simulator")
+	ErrInexactBasePool           = errors.New("underlying everlong-cvamm base pool cannot replay liquidity changes exactly")
+	ErrInexactCoupledState       = errors.New("coupled state is not execution-exact")
+	ErrUnattestedReference       = errors.New("the ALM reference-oracle gate is no longer attested after a base price move")
+	ErrMathNotConfigured         = errors.New("config.Math is unset, not an address, or does not answer deleverageQuote")
+	ErrInvalidSnapshotWord       = errors.New("invalid snapshot value")
+	ErrVenueGateClosed           = errors.New("the venue would revert this direction")
+	ErrSwapperIdentity           = errors.New("the settlement swapper does not belong to the configured rebalancer, or its pair disagrees with config")
+	ErrMathMismatch              = errors.New("the deployed CollRebalancerMath disagrees with the local model")
+	ErrMathNotLinked             = errors.New("the rebalancer implementation does not link the configured CollRebalancerMath")
+	ErrGateDiscovery             = errors.New("a gate pointer the verified deployment exposes did not resolve")
+	ErrFlashFeeNotExempt         = errors.New("the swapper is not flash-fee exempt on the debt token: every fill would revert NonZeroFlashFee")
 )
 
 var ErrStateOverridesUnsupported = errors.New(

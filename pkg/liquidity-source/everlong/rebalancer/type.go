@@ -14,6 +14,12 @@ type StaticExtra struct {
 	// reservationValuePerShareWad rounding the simulator mirrors. The swapper's ALM
 	// pointer is immutable; a new swapper is relisted and re-attested.
 	ALMAdapterCodeHash string `json:"almCodeHash,omitempty"`
+	// Runtime hashes attest the exact rebalancer implementation, settlement swapper and
+	// linked math library reviewed by this integration. Address identity alone would
+	// silently accept a newly deployed ABI-compatible but semantically different stack.
+	ImplementationCodeHash string `json:"implCodeHash,omitempty"`
+	SwapperCodeHash        string `json:"swapperCodeHash,omitempty"`
+	MathCodeHash           string `json:"mathCodeHash,omitempty"`
 	// The CvammALM the adapter wraps (resolved from its alm() getter at listing) — the
 	// everlong-cvamm base pool for meta coupling.
 	UnderlyingCvamm string `json:"ucv,omitempty"`
@@ -32,6 +38,10 @@ type StaticExtra struct {
 	// MintAllowlist gates the ALM adapter's buyShares; the swapper must stay on it for
 	// leverage to settle. Immutable on the adapter.
 	MintAllowlist string `json:"mintAllowlist,omitempty"`
+	// UnderlyingDepositAllowlist is CvammALM.depositAllowlist(), distinct from the
+	// wrapper's mint allowlist above. The raw CvammALM sees the wrapper as msg.sender on
+	// deposit, so leverage requires both memberships independently.
+	UnderlyingDepositAllowlist string `json:"underlyingDepositAllowlist,omitempty"`
 	// Implementation is the rebalancer proxy's EIP-1967 implementation at listing. The
 	// CollRebalancerMath the executor re-derives against is LINKED into that code, so a
 	// new implementation is the one way the math can change under a listed pool: the
@@ -64,9 +74,8 @@ type Extra = VaultState
 //
 // Deleverage (stable -> volatile): the executor calls
 // swapStableForVolatile(GrossStableIn, maxNetStableIn, minVolatileOut, receiver).
-// NOTE the swapper transferFroms maxNetStableIn UP FRONT and refunds the excess within
-// the same call — the payer must hold and approve maxNetStableIn (>= the true net; a
-// snug cap risks an on-chain revert on state drift), even though only the net is spent.
+// The exact physical stable released by the ALM is carried in StableLeg, so the adapter
+// delivers GrossStableIn-StableLeg and no synthetic headroom is charged to the route.
 type SwapInfo struct {
 	IsLeverage bool `json:"lev"`
 	// CollVaultShares: shares minted (leverage) or burned (deleverage).

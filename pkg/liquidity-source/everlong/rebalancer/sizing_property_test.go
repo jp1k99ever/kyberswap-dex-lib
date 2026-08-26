@@ -94,7 +94,7 @@ func TestPropDeleverageSizing(t *testing.T) {
 		sortBig(grosses)
 		prev := new(big.Int).Neg(big.NewInt(1))
 		for _, g := range grosses {
-			stableOut, _, ok := cp.deleverageLegsAt(s, g)
+			stableOut, ok := cp.physicalDeleverageStableAt(s, g)
 			if !ok {
 				continue // sub-wei lots the curve rejects
 			}
@@ -110,12 +110,12 @@ func TestPropDeleverageSizing(t *testing.T) {
 			if g.Sign() == 0 {
 				continue
 			}
-			stableOut, _, ok := cp.deleverageLegsAt(s, g)
+			stableOut, ok := cp.physicalDeleverageStableAt(s, g)
 			require.True(t, ok)
 			require.LessOrEqual(t, new(big.Int).Sub(g, stableOut).Cmp(budget), 0, "trial %d: chosen gross overspends", trial)
 			next := new(big.Int).Add(g, big.NewInt(1))
 			if next.Cmp(maxGross) <= 0 {
-				if so, _, ok := cp.deleverageLegsAt(s, next); ok {
+				if so, ok := cp.physicalDeleverageStableAt(s, next); ok {
 					require.Greater(t, new(big.Int).Sub(next, so).Cmp(budget), 0, "trial %d: a larger gross still fits the budget", trial)
 				}
 			}

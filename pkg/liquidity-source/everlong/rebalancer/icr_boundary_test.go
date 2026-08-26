@@ -67,7 +67,7 @@ func TestIcrFloorBoundary(t *testing.T) {
 		if ov != nil {
 			req.SetOverrides(ov)
 		}
-		addRPCCalls(func(c *ethrpc.Call, o []any) { req.AddCall(c, o) }, &staticExtra, rd, nil)
+		addRPCCalls(func(c *ethrpc.Call, o []any) { req.AddCall(c, o) }, &staticExtra, rd)
 		_, err := req.TryAggregate()
 		require.NoError(t, err)
 		// the gates that cannot ride a multicall (the overrides here touch only the price

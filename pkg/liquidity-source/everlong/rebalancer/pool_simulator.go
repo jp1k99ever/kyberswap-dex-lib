@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
-	"time"
 
 	"github.com/goccy/go-json"
 	"github.com/samber/lo"
@@ -70,6 +69,16 @@ func NewPoolSimulatorWithBases(p entity.Pool, basePoolMap map[string]pool.IPoolS
 	}
 	if !strings.EqualFold(sim.StaticExtra.ALMAdapterCodeHash, supportedAlmAdapterCodeHash) {
 		return nil, ErrUnsupportedAdapter
+	}
+	if !strings.EqualFold(sim.StaticExtra.ImplementationCodeHash,
+		supportedRebalancerImplementationCodeHash) {
+		return nil, ErrUnsupportedImplementation
+	}
+	if !strings.EqualFold(sim.StaticExtra.SwapperCodeHash, supportedSettlementSwapperCodeHash) {
+		return nil, ErrUnsupportedSwapper
+	}
+	if !strings.EqualFold(sim.StaticExtra.MathCodeHash, supportedCollRebalancerMathCodeHash) {
+		return nil, ErrUnsupportedMath
 	}
 	base, ok := basePoolMap[strings.ToLower(sim.StaticExtra.UnderlyingCvamm)]
 	if !ok {
@@ -545,8 +554,6 @@ func NewPoolSimulator(p entity.Pool) (*PoolSimulator, error) {
 	if extra.CvDecimalsOffset == 0 {
 		extra.CvDecimalsOffset = staticExtra.CvDecimalsOffset
 	}
-	projectInterestDebt(&extra)
-
 	return &PoolSimulator{
 		Pool: pool.Pool{Info: pool.PoolInfo{
 			Address:     p.Address,
@@ -559,35 +566,6 @@ func NewPoolSimulator(p entity.Pool) (*PoolSimulator, error) {
 		StaticExtra: staticExtra,
 		Extra:       extra,
 	}, nil
-}
-
-// projectInterestDebt reproduces PositionManager.getPositionCollAndDebt's interest leg at
-// construction time: once governance enables borrow interest the position's debt compounds
-// per second with NO event, so the tracker snapshot goes stale between refreshes. The
-// projection is debt = floor(rawDebt * currentIndex / positionIndex) + pendingDebtReward,
-// with currentIndex = activeIndex * (1 + deltaT*rate/1e27) (_calculateInterestIndex).
-// Computed once here so repeated quoting stays deterministic. A zero rate — the current
-// deployment, where leverage is refused outright otherwise — leaves the snapshot as-is.
-func projectInterestDebt(e *Extra) {
-	if e.InterestRate == nil || e.InterestRate.Sign() <= 0 ||
-		e.PosRawDebt == nil || e.PosInterestIndex == nil || e.PosInterestIndex.Sign() <= 0 ||
-		e.ActiveInterestIndex == nil || e.LastActiveIndexUpdate == nil {
-		return
-	}
-	idx := new(big.Int).Set(e.ActiveInterestIndex)
-	if now := time.Now().Unix(); now > e.LastActiveIndexUpdate.Int64() {
-		var factor big.Int
-		factor.Sub(big.NewInt(now), e.LastActiveIndexUpdate)
-		factor.Mul(&factor, e.InterestRate)
-		idx.Add(idx, mulDiv(idx, &factor, bigInterestRayPrec))
-	}
-	debt := mulDiv(e.PosRawDebt, idx, e.PosInterestIndex)
-	if e.PendingDebtReward != nil {
-		debt.Add(debt, e.PendingDebtReward)
-	}
-	if e.Debt == nil || debt.Cmp(e.Debt) > 0 {
-		e.Debt = debt
-	}
 }
 
 func (s *PoolSimulator) CalcAmountOut(params pool.CalcAmountOutParams) (*pool.CalcAmountOutResult, error) {
@@ -604,6 +582,9 @@ func (s *PoolSimulator) CalcAmountOut(params pool.CalcAmountOutParams) (*pool.Ca
 	}
 	if s.Extra.Collateral == nil {
 		return nil, ErrNotPriceable
+	}
+	if s.Extra.InterestRate != nil && s.Extra.InterestRate.Sign() != 0 {
+		return nil, ErrInterestRateUnsupported
 	}
 	if blocked := s.Extra.blockedFor(indexIn == 1); blocked != "" {
 		return nil, fmt.Errorf("%w: %s", ErrVenueGateClosed, blocked)
@@ -651,12 +632,6 @@ func (s *PoolSimulator) calcLeverage(params pool.CalcAmountOutParams,
 	amountIn *big.Int) (*pool.CalcAmountOutResult, error) {
 	cp := s.curveParams()
 	state := s.quoteState(amountIn)
-
-	// Debt origination is halted while the CDP charges borrow interest: the rebalancer
-	// reverts every leverage fill, though deleverage stays live.
-	if state.InterestRate != nil && state.InterestRate.Sign() != 0 {
-		return nil, ErrLeverageDisabled
-	}
 
 	// Cap by the physical-CR floor. The bound is modelled on the POST-fill book exactly
 	// as the venue re-checks it, and reproduces the venue's own boundary to the share —
@@ -739,29 +714,15 @@ func (s *PoolSimulator) calcDeleverage(params pool.CalcAmountOutParams,
 		return nil, ErrSwapRejected
 	}
 
-	// Sized to the swapper's PREVIEW net, one wei under the budget: the ALM floors the
-	// accounted and idle parts of a withdraw separately, so the stable it physically
-	// releases can land a wei under the preview the flash repayment was sized off, and an
-	// exactly-funded call reverts Slippage. The wei of headroom absorbs it — the
-	// adapter keeps the same wei (see EverlongRebalancerAdapter).
-	var budget big.Int
-	budget.Sub(amountIn, big.NewInt(1))
-	gross := cp.grossForNetStableIn(state, &budget, maxGross)
+	// Size from the exact physical withdraw legs. The executor receives stableOut from
+	// redeemLegs and therefore needs precisely gross-stableOut from the route; no
+	// synthetic headroom or refund dust belongs in RemainingTokenAmountIn.
+	gross := cp.grossForNetStableIn(state, amountIn, maxGross)
 	if gross.Sign() == 0 {
 		return nil, ErrSwapRejected
 	}
 	sharesOut, newColl, newDebt := cp.deleverageQuoteChecked(state, gross)
 	if sharesOut.Sign() == 0 {
-		return nil, ErrSwapRejected
-	}
-	stablePreview, _, ok := state.previewTokenAmounts(sharesOut, false)
-	if !ok {
-		return nil, ErrSwapRejected
-	}
-	// net = gross - released stable must stay positive and monotone in gross; past the
-	// point where the released stable outruns the debt retired the swapper would refund
-	// more than it pulled and the sizing's monotonicity no longer holds.
-	if stablePreview.Cmp(gross) >= 0 {
 		return nil, ErrSwapRejected
 	}
 	almShares, ok := state.redeemAlmShares(state.netRedeemShares(sharesOut))
@@ -774,11 +735,11 @@ func (s *PoolSimulator) calcDeleverage(params pool.CalcAmountOutParams,
 	}
 	dIdleS, dIdleV := state.redeemIdleDeltas(almShares)
 
-	// What the route must deliver: the preview net plus the wei of headroom. The swapper
-	// pulls it and refunds whatever the physical legs leave.
 	var net, remaining big.Int
-	net.Sub(gross, stablePreview)
-	net.Add(&net, big.NewInt(1))
+	net.Sub(gross, stableOut)
+	if net.Sign() <= 0 {
+		return nil, ErrSwapRejected
+	}
 	remaining.Sub(amountIn, &net)
 	if remaining.Sign() < 0 {
 		return nil, ErrSwapRejected

@@ -1359,16 +1359,16 @@ func volatileForShares(s *VaultState, shares *big.Int) (*big.Int, bool) {
 }
 
 // grossForNetStableIn: largest gross stableDebtIn (within [1, maxGross], where maxGross
-// must already be a VALID quoting size — pass maxDeleverageIn) whose NET front
-// (gross - freed stable) fits within netBudget. The net is nondecreasing in the gross,
-// so the predicate is monotone; sub-wei grosses that round to a rejected quote are
-// treated by their gross (net <= gross always), and the winner is re-validated.
+// must already be a VALID quoting size — pass maxDeleverageIn) whose exact physical NET
+// front (gross - stable released by CvammALM.withdraw) fits within netBudget. The raw ALM
+// floors accounted and idle buckets separately, so sizing from the wrapper's combined
+// preview can be one wei optimistic and must not be used as the route budget.
 func (cp *CurveParams) grossForNetStableIn(s *VaultState, netBudget, maxGross *big.Int) *big.Int {
 	if netBudget.Sign() <= 0 || maxGross.Sign() <= 0 {
 		return new(big.Int)
 	}
 	fitsNet := func(gross *big.Int) bool {
-		stableOut, _, ok := cp.deleverageLegsAt(s, gross)
+		stableOut, ok := cp.physicalDeleverageStableAt(s, gross)
 		if !ok {
 			// only tiny grosses are invalid below maxGross; net <= gross bounds them
 			return gross.Cmp(netBudget) <= 0
@@ -1391,10 +1391,26 @@ func (cp *CurveParams) grossForNetStableIn(s *VaultState, netBudget, maxGross *b
 			hi.Sub(&mid, one)
 		}
 	}
-	if _, _, ok := cp.deleverageLegsAt(s, lo); !ok {
+	if _, ok := cp.physicalDeleverageStableAt(s, lo); !ok {
 		return new(big.Int)
 	}
 	return lo
+}
+
+func (cp *CurveParams) physicalDeleverageStableAt(s *VaultState, gross *big.Int) (*big.Int, bool) {
+	sharesOut, _, _ := cp.deleverageQuoteChecked(s, gross)
+	if sharesOut.Sign() == 0 {
+		return nil, false
+	}
+	almShares, ok := s.redeemAlmShares(s.netRedeemShares(sharesOut))
+	if !ok {
+		return nil, false
+	}
+	stableOut, _ := s.redeemLegs(almShares)
+	if stableOut.Cmp(gross) >= 0 {
+		return nil, false
+	}
+	return stableOut, true
 }
 
 // ---------- Direction / full-lot views ----------

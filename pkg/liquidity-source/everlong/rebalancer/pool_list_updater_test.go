@@ -2,9 +2,12 @@ package everlongrebalancer
 
 import (
 	"encoding/binary"
+	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/require"
 )
 
@@ -12,20 +15,70 @@ func TestMetadataMatchesImplementation(t *testing.T) {
 	swapper := common.HexToAddress("0x0000000000000000000000000000000000000001")
 	vault := common.HexToAddress("0x0000000000000000000000000000000000000002")
 	implementation := common.HexToAddress("0x0000000000000000000000000000000000000003")
+	depositAllowlist := common.HexToAddress("0x0000000000000000000000000000000000000005")
+	configHash := "0xconfig"
 
 	metadata := Metadata{
-		Swapper:        swapper.Hex(),
-		ManagedVault:   vault.Hex(),
-		Implementation: implementation.Hex(),
+		Swapper:                    swapper.Hex(),
+		ManagedVault:               vault.Hex(),
+		Implementation:             implementation.Hex(),
+		ALMAdapterCodeHash:         supportedAlmAdapterCodeHash,
+		ImplementationCodeHash:     supportedRebalancerImplementationCodeHash,
+		SwapperCodeHash:            supportedSettlementSwapperCodeHash,
+		MathCodeHash:               supportedCollRebalancerMathCodeHash,
+		UnderlyingDepositAllowlist: depositAllowlist.Hex(),
+		ConfigHash:                 configHash,
 	}
-	require.True(t, metadata.matches(swapper, vault, implementation))
+	require.True(t, metadata.matches(swapper, vault, implementation, depositAllowlist, configHash))
 	require.False(t, metadata.matches(swapper, vault,
-		common.HexToAddress("0x0000000000000000000000000000000000000004")),
+		common.HexToAddress("0x0000000000000000000000000000000000000004"), depositAllowlist, configHash),
 		"an implementation-only upgrade must relist the pool")
+	require.False(t, metadata.matches(swapper, vault, implementation,
+		common.HexToAddress("0x0000000000000000000000000000000000000006"), configHash),
+		"a raw ALM allowlist rotation must relist the pool")
+	require.False(t, metadata.matches(swapper, vault, implementation, depositAllowlist, "0xchanged"),
+		"a config-only change must relist the pool")
 
 	metadata.Implementation = "" // cursor persisted by the previous integration version
-	require.False(t, metadata.matches(swapper, vault, implementation),
+	require.False(t, metadata.matches(swapper, vault, implementation, depositAllowlist, configHash),
 		"an old cursor must relist once to pin the implementation")
+}
+
+func TestRuntimeCodeHashMatchesExactRuntime(t *testing.T) {
+	code := []byte{0x60, 0x00, 0x60, 0x01}
+	want := crypto.Keccak256Hash(code).Hex()
+	require.True(t, runtimeCodeHashMatches(code, want))
+	require.True(t, runtimeCodeHashMatches(code, strings.ToUpper(want)))
+	require.False(t, runtimeCodeHashMatches(append(code, 0x00), want))
+	require.False(t, runtimeCodeHashMatches(nil, crypto.Keccak256Hash(nil).Hex()),
+		"an empty account must never satisfy a runtime attestation")
+}
+
+func TestConfigFingerprintCoversEveryStaticInput(t *testing.T) {
+	base := *berachainTestConfig()
+	cp := berachainCurveParams()
+	hash := func(cfg Config, curve CurveParams) string {
+		got, err := (&PoolsListUpdater{config: &cfg}).configFingerprint(curve)
+		require.NoError(t, err)
+		return got
+	}
+	want := hash(base, cp)
+	mutations := []func(*Config, *CurveParams){
+		func(c *Config, _ *CurveParams) { c.DexID += "-changed" },
+		func(c *Config, _ *CurveParams) { c.ChainID++ },
+		func(c *Config, _ *CurveParams) { c.Rebalancer = common.Address{0x01}.Hex() },
+		func(c *Config, _ *CurveParams) { c.Stable = common.Address{0x02}.Hex() },
+		func(c *Config, _ *CurveParams) { c.Volatile = common.Address{0x03}.Hex() },
+		func(c *Config, _ *CurveParams) { c.Math = common.Address{0x04}.Hex() },
+		func(c *Config, _ *CurveParams) { c.GasLeverage++ },
+		func(c *Config, _ *CurveParams) { c.GasDeleverage++ },
+		func(_ *Config, curve *CurveParams) { curve.HJoin = new(big.Int).Add(curve.HJoin, big.NewInt(1)) },
+	}
+	for i, mutate := range mutations {
+		cfg, curve := base, cp
+		mutate(&cfg, &curve)
+		require.NotEqual(t, want, hash(cfg, curve), "mutation %d was missing from the cursor", i)
+	}
 }
 
 func TestRuntimeLinksLibrary(t *testing.T) {

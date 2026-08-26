@@ -69,7 +69,6 @@ type rpcState struct {
 	position      positionsRaw
 	pending       pendingRewardsRaw
 	crFloorWad    *big.Int
-	levCurve      levCurveRaw
 	almResvPrice  *big.Int
 	almIdleStable *big.Int
 	almIdleVol    *big.Int
@@ -78,44 +77,22 @@ type rpcState struct {
 	settlementSw  common.Address
 	// Execution-gate words. Bool getters decode into a big.Int, so nil always means the
 	// read did not land — which every gate treats as closed.
-	mintAllowed   *big.Int
-	corePaused    *big.Int
-	pmPaused      *big.Int
-	pmSunsetting  *big.Int
-	maxSysDebt    *big.Int
-	defaultedDebt *big.Int
-	activeDebt    *big.Int
-	borrowingRate *big.Int
-	almPaused     *big.Int
-	flashFeeBp    *big.Int // from-scoped probe, outside the multicall
-	managedVault  common.Address
-	implSlot      *big.Int // EIP-1967 implementation word, outside the multicall
-	mathProbe     *mathProbeArgs
-	mathProbeOut  struct {
-		CollateralOut *big.Int
-		NewColl       *big.Int
-		NewDebt       *big.Int
-	}
-	delegated   *big.Int
-	isPeriphery *big.Int
-}
-
-// levCurveRaw decodes leverageCurve()'s 13-word C1 tuple (hZero stays a library
-// constant on-chain; q0 is implicitly zero).
-type levCurveRaw struct {
-	HJoin *big.Int
-	HWall *big.Int
-	Width *big.Int
-	DJoin *big.Int
-	DWall *big.Int
-	P0    *big.Int
-	P1    *big.Int
-	P2    *big.Int
-	P3    *big.Int
-	Q1    *big.Int
-	Q2    *big.Int
-	Q3    *big.Int
-	Q4    *big.Int
+	mintAllowed              *big.Int
+	rawDepositAllowlist      common.Address
+	underlyingDepositAllowed *big.Int
+	corePaused               *big.Int
+	pmPaused                 *big.Int
+	pmSunsetting             *big.Int
+	maxSysDebt               *big.Int
+	defaultedDebt            *big.Int
+	activeDebt               *big.Int
+	borrowingRate            *big.Int
+	almPaused                *big.Int
+	flashFeeBp               *big.Int // from-scoped probe, outside the multicall
+	managedVault             common.Address
+	implSlot                 *big.Int // EIP-1967 implementation word, outside the multicall
+	delegated                *big.Int
+	isPeriphery              *big.Int
 }
 
 // newRPCState deliberately pre-allocates NOTHING. The decoder allocates on success, so
@@ -134,7 +111,7 @@ func newRPCState() *rpcState {
 // spot strays from the reference oracle, and the rebalancer consults it only inside
 // increaseLeverage, so its failure gates leverage (zero ref words) while deleverage
 // stays live — exactly the on-chain behavior.
-func addRPCCalls(rawAdd func(*ethrpc.Call, []any), se *StaticExtra, rd *rpcState, mathProbe *mathProbeArgs) (tolerated map[int]bool) {
+func addRPCCalls(rawAdd func(*ethrpc.Call, []any), se *StaticExtra, rd *rpcState) (tolerated map[int]bool) {
 	tolerated = map[int]bool{}
 	numCalls := 0
 	add := func(c *ethrpc.Call, o []any) {
@@ -177,21 +154,15 @@ func addRPCCalls(rawAdd func(*ethrpc.Call, []any), se *StaticExtra, rd *rpcState
 		Target: se.ALM,
 		Method: almMethodGetReservesAtReference,
 	}, []any{&rd.refReserves})
-	// Live curve reads: PHYSICAL_CR_FLOOR_WAD answers today; leverageCurve() ships
-	// with the settable-curve upgrade. Both tolerated so no impl vintage kills the
-	// snapshot.
-	tolerated[numCalls] = true
+	// PHYSICAL_CR_FLOOR_WAD answers on the allowlisted implementation. Its other curve
+	// constants are the listing-time attested frozen curve. Do not plan leverageCurve():
+	// this exact supported runtime lacks it, and any future runtime must be allowlisted in
+	// code before it can be tracked.
 	add(&ethrpc.Call{
 		ABI:    rebalancerABI,
 		Target: se.Rebalancer,
 		Method: rebalancerMethodPhysicalCrFloor,
 	}, []any{&rd.crFloorWad})
-	tolerated[numCalls] = true
-	add(&ethrpc.Call{
-		ABI:    rebalancerABI,
-		Target: se.Rebalancer,
-		Method: rebalancerMethodLeverageCurve,
-	}, []any{&rd.levCurve})
 	// The endogenous per-ALM-share mark the reservation value derives from; needed to
 	// recompute the post-fill reservation value in the fill-acceptance predicate.
 	add(&ethrpc.Call{
@@ -237,6 +208,25 @@ func addRPCCalls(rawAdd func(*ethrpc.Call, []any), se *StaticExtra, rd *rpcState
 			Method: allowlistMethodIsDepositAllowed,
 			Params: []any{common.HexToAddress(se.Swapper)},
 		}, []any{&rd.mintAllowed})
+	}
+	if se.UnderlyingCvamm != "" {
+		// CvammALM.depositAllowlist is a second, independent gate: the wrapper calls
+		// CvammALM.deposit(), so the raw ALM checks the wrapper (not the swapper).
+		tolerated[numCalls] = true
+		add(&ethrpc.Call{
+			ABI:    cvammALMABI,
+			Target: se.UnderlyingCvamm,
+			Method: cvammMethodDepositAllowlist,
+		}, []any{&rd.rawDepositAllowlist})
+		if se.UnderlyingDepositAllowlist != "" {
+			tolerated[numCalls] = true
+			add(&ethrpc.Call{
+				ABI:    depositAllowlistABI,
+				Target: se.UnderlyingDepositAllowlist,
+				Method: allowlistMethodIsDepositAllowed,
+				Params: []any{common.HexToAddress(se.ALM)},
+			}, []any{&rd.underlyingDepositAllowed})
+		}
 	}
 	// The ALM's own pause: buyShares -> deposit is whenNotPaused while withdraw is not,
 	// so a paused ALM stops leverage and leaves deleverage live.
@@ -353,54 +343,7 @@ func addRPCCalls(rawAdd func(*ethrpc.Call, []any), se *StaticExtra, rd *rpcState
 			}, []any{&rd.pending})
 		}
 	}
-	// Re-attest the linked math against the local model on every refresh: listing proved
-	// the two agree, but the rebalancer is a proxy and its library can be relinked under
-	// a pool that is already listed. The probe reuses the PREVIOUS snapshot's debt (the
-	// planner runs before any result is in), and buildPoolState blocks deleverage on a
-	// mismatch — deleverage is the direction whose gross the executor re-derives against
-	// this library on-chain.
-	if mathProbe != nil && se.Math != "" {
-		rd.mathProbe = mathProbe
-		tolerated[numCalls] = true
-		add(&ethrpc.Call{
-			ABI:    mathABI,
-			Target: se.Math,
-			Method: mathMethodDeleverageQuote,
-			Params: []any{mathProbe.Collateral, mathProbe.Debt, mathProbe.PriceWad,
-				se.CurveParams.LeverageRatioWad, mathProbe.SpreadPpm, mathProbe.StableIn},
-		}, []any{&rd.mathProbeOut})
-	}
 	return tolerated
-}
-
-// mathProbeArgs is one pure evaluation of deleverageQuote, fixed at plan time so the
-// deployed library and the local model are asked exactly the same question.
-type mathProbeArgs struct {
-	Collateral, Debt, PriceWad, SpreadPpm, StableIn *big.Int
-}
-
-// mathProbeFor takes the re-attestation point from the snapshot the pool already
-// carries: the previous state with a quarter of its debt as the lot, which is
-// nondegenerate at any state the venue quotes. The inputs need not be current — the
-// function is pure, so a relinked or reparameterised library shows up regardless.
-// Returns nil right after listing (no Extra yet), where listing's own multi-point check
-// has just run against live state.
-func mathProbeFor(p entity.Pool) *mathProbeArgs {
-	if p.Extra == "" {
-		return nil
-	}
-	var prev Extra
-	if json.Unmarshal([]byte(p.Extra), &prev) != nil {
-		return nil
-	}
-	if prev.Debt == nil || prev.Debt.Sign() == 0 || prev.Collateral == nil ||
-		prev.PriceWad == nil || prev.SpreadPpm == nil {
-		return nil
-	}
-	return &mathProbeArgs{
-		Collateral: prev.Collateral, Debt: prev.Debt, PriceWad: prev.PriceWad,
-		SpreadPpm: prev.SpreadPpm, StableIn: new(big.Int).Div(prev.Debt, big.NewInt(4)),
-	}
 }
 
 // LazyNewPoolState plans the refresh without executing it, so pool-service can batch
@@ -415,8 +358,11 @@ func (t *PoolTracker) LazyNewPoolState(ctx context.Context, p entity.Pool,
 	}
 	rd := newRPCState()
 	req := pool.LazyRequest{Request: t.ethrpcClient.NewRequest().SetContext(ctx)}
-	addRPCCalls(func(c *ethrpc.Call, o []any) { req.AddCall(c, o) }, &staticExtra, rd, mathProbeFor(p))
+	addRPCCalls(func(c *ethrpc.Call, o []any) { req.AddCall(c, o) }, &staticExtra, rd)
 	return &req, func(blockNumber *big.Int) (entity.Pool, error) {
+		if blockNumber == nil || blockNumber.Sign() <= 0 {
+			return p, ErrInvalidSnapshotWord
+		}
 		// Two reads cannot ride a multicall (a from-scoped call and a storage slot); they
 		// run here, after the batch, so the batched path gates on the same facts as the
 		// direct one rather than on listing-time assumptions.
@@ -440,19 +386,20 @@ func (t *PoolTracker) getNewPoolState(ctx context.Context, p entity.Pool,
 	if overrides != nil {
 		req.SetOverrides(overrides)
 	}
-	tolerated := addRPCCalls(func(c *ethrpc.Call, o []any) { req.AddCall(c, o) }, &staticExtra, rd, mathProbeFor(p))
+	tolerated := addRPCCalls(func(c *ethrpc.Call, o []any) { req.AddCall(c, o) }, &staticExtra, rd)
 
 	// TryBlockAndAggregate: per-call tolerance like TryAggregate — getReservesAtReference may
 	// revert on its own (reference oracle
 	// stale / spot outside the oracle neighborhood) while the venue keeps filling
 	// deleverage on-chain; every other read failing means the venue itself is down.
 	resp, err := req.TryBlockAndAggregate()
-	if err == nil {
-		t.probeOutsideMulticall(ctx, &staticExtra, rd, resp.BlockNumber)
-	}
 	if err != nil {
 		return p, err
 	}
+	if resp.BlockNumber == nil || resp.BlockNumber.Sign() <= 0 {
+		return p, ErrInvalidSnapshotWord
+	}
+	t.probeOutsideMulticall(ctx, &staticExtra, rd, resp.BlockNumber)
 	for i, ok := range resp.Result {
 		if !ok && !tolerated[i] {
 			return p, ErrInvalidSnapshotWord
@@ -470,6 +417,9 @@ func (t *PoolTracker) getNewPoolState(ctx context.Context, p entity.Pool,
 // here rather than trusted.
 func buildPoolState(p entity.Pool, staticExtra *StaticExtra, rd *rpcState,
 	blockNumber *big.Int) (entity.Pool, error) {
+	if blockNumber == nil || blockNumber.Sign() <= 0 {
+		return p, ErrInvalidSnapshotWord
+	}
 	// Required words, validated HERE rather than off the direct path's tolerated map: the
 	// batched path never sees that map, so anything checked only there would fail closed
 	// on one path and degrade silently on the other. The set below mirrors exactly which
@@ -477,7 +427,8 @@ func buildPoolState(p entity.Pool, staticExtra *StaticExtra, rd *rpcState,
 	required := []*big.Int{rd.exchangeState.Collateral, rd.exchangeState.Debt,
 		rd.exchangeState.PriceWad, rd.exchangeState.SpreadPpm,
 		rd.totalAmounts.StableReserve, rd.totalAmounts.VolatileReserve,
-		rd.almSupply, rd.cvTotalAssets, rd.cvTotalSupply, rd.withdrawFeeBp, rd.rvpsWad}
+		rd.almSupply, rd.cvTotalAssets, rd.cvTotalSupply, rd.withdrawFeeBp, rd.rvpsWad,
+		rd.crFloorWad}
 	if staticExtra.BorrowerOperations != "" {
 		required = append(required, rd.minNetDebt)
 	}
@@ -492,6 +443,9 @@ func buildPoolState(p entity.Pool, staticExtra *StaticExtra, rd *rpcState,
 		if v == nil || v.Sign() < 0 {
 			return p, ErrInvalidSnapshotWord
 		}
+	}
+	if rd.crFloorWad.Sign() <= 0 {
+		return p, ErrInvalidSnapshotWord
 	}
 	// getReservesAtReference gates only increaseLeverage on-chain: an unreadable
 	// reference leg zeroes the ref words so leverage sizes to 0 while deleverage keeps
@@ -521,26 +475,6 @@ func buildPoolState(p entity.Pool, staticExtra *StaticExtra, rd *rpcState,
 		lc.PhysicalCrFloorWad = rd.crFloorWad
 		liveCurve = &lc
 	}
-	if rd.levCurve.HJoin != nil && rd.levCurve.HWall != nil {
-		lc := staticExtra.CurveParams
-		if liveCurve != nil {
-			lc = *liveCurve
-		}
-		lc.HJoin = rd.levCurve.HJoin
-		lc.HWall = rd.levCurve.HWall
-		lc.Width = rd.levCurve.Width
-		lc.DJoin = rd.levCurve.DJoin
-		lc.DWall = rd.levCurve.DWall
-		lc.BezierPhi = [4]*big.Int{rd.levCurve.P0, rd.levCurve.P1, rd.levCurve.P2, rd.levCurve.P3}
-		lc.BezierIntegral = [5]*big.Int{new(big.Int), rd.levCurve.Q1, rd.levCurve.Q2, rd.levCurve.Q3, rd.levCurve.Q4}
-		// The overlay REPLACES the validated frozen constants for every quote, so it has
-		// to clear the same bar. A tolerated read can decode a partial or degenerate
-		// tuple; adopting it would divide by zero or panic in the lerp on the next quote.
-		if lc.usable() {
-			liveCurve = &lc
-		}
-	}
-
 	if staticExtra.UnderlyingCvamm != "" &&
 		(rd.almResvPrice.Sign() <= 0 ||
 			rd.almIdleStable.Cmp(rd.totalAmounts.StableReserve) > 0 ||
@@ -548,15 +482,6 @@ func buildPoolState(p entity.Pool, staticExtra *StaticExtra, rd *rpcState,
 		return p, ErrInvalidSnapshotWord
 	}
 	levBlock, dlvBlock := gateReasons(staticExtra, rd)
-	if reason := mathAttestation(staticExtra, rd); reason != "" {
-		// the linked library prices BOTH directions
-		if levBlock == "" {
-			levBlock = reason
-		}
-		if dlvBlock == "" {
-			dlvBlock = reason
-		}
-	}
 	// CCR with the system totals, or none of them (an incomplete pair blocks both
 	// directions above, so this only shapes what the predicate sees).
 	var ccrWad, sysColl, sysDebt *big.Int
@@ -653,6 +578,15 @@ func gateReasons(se *StaticExtra, rd *rpcState) (leverage, deleverage string) {
 	isTrue := func(v *big.Int) bool { return v != nil && v.Sign() != 0 }
 
 	switch {
+	case !strings.EqualFold(se.ImplementationCodeHash, supportedRebalancerImplementationCodeHash):
+		both("the rebalancer implementation runtime is not allowlisted")
+	case !strings.EqualFold(se.SwapperCodeHash, supportedSettlementSwapperCodeHash):
+		both("the settlement swapper runtime is not allowlisted")
+	case !strings.EqualFold(se.MathCodeHash, supportedCollRebalancerMathCodeHash):
+		both("the CollRebalancerMath runtime is not allowlisted")
+	}
+
+	switch {
 	case rd.settlementSw == (common.Address{}):
 		both("settlementSwapper() unreadable")
 	case !strings.EqualFold(rd.settlementSw.Hex(), se.Swapper):
@@ -705,6 +639,20 @@ func gateReasons(se *StaticExtra, rd *rpcState) (leverage, deleverage string) {
 		}
 	}
 	if se.UnderlyingCvamm != "" {
+		switch {
+		case se.UnderlyingDepositAllowlist == "":
+			lev("the raw ALM deposit allowlist was not attested")
+		case rd.rawDepositAllowlist == (common.Address{}):
+			lev("the raw ALM deposit allowlist is unreadable")
+		case !strings.EqualFold(rd.rawDepositAllowlist.Hex(), se.UnderlyingDepositAllowlist):
+			lev("the raw ALM deposit allowlist rotated; relist")
+		case rd.underlyingDepositAllowed == nil:
+			lev("the raw ALM deposit allowlist membership is unreadable")
+		case !isTrue(rd.underlyingDepositAllowed):
+			lev("the ALM wrapper is not allowed to deposit into the raw ALM")
+		}
+	}
+	if se.UnderlyingCvamm != "" {
 		if rd.almPaused == nil {
 			lev("the ALM's paused() is unreadable")
 		} else if isTrue(rd.almPaused) {
@@ -712,6 +660,12 @@ func gateReasons(se *StaticExtra, rd *rpcState) (leverage, deleverage string) {
 		}
 	}
 	if se.PositionManager != "" {
+		if rd.interestRate != nil && rd.interestRate.Sign() != 0 {
+			// Exact local projection would also require every system-wide total used by
+			// BorrowerOperations. This verified deployment has zero interest; fail both
+			// directions if governance changes that profile.
+			both("the CDP has non-zero borrow interest; exact system debt is unavailable")
+		}
 		switch {
 		case rd.pmPaused == nil || rd.pmSunsetting == nil:
 			lev("the collateral's pause / sunset flags are unreadable")
@@ -734,27 +688,6 @@ func gateReasons(se *StaticExtra, rd *rpcState) (leverage, deleverage string) {
 		}
 	}
 	return leverage, deleverage
-}
-
-// mathAttestation re-checks the deployed CollRebalancerMath against the local model on
-// the plan-time probe. A mismatch means the library the executor will re-derive against
-// is no longer the one this port models, which makes every partial deleverage a guess:
-// the direction is disabled until listing re-attests it.
-func mathAttestation(se *StaticExtra, rd *rpcState) string {
-	if rd.mathProbe == nil || se.Math == "" {
-		return ""
-	}
-	cp := se.CurveParams
-	if rd.mathProbeOut.CollateralOut == nil {
-		return "the linked CollRebalancerMath did not answer"
-	}
-	wantOut, wantColl, wantDebt := cp.deleverageQuote(rd.mathProbe.Collateral, rd.mathProbe.Debt,
-		rd.mathProbe.PriceWad, cp.LeverageRatioWad, rd.mathProbe.SpreadPpm, rd.mathProbe.StableIn)
-	if rd.mathProbeOut.CollateralOut.Cmp(wantOut) != 0 ||
-		rd.mathProbeOut.NewColl.Cmp(wantColl) != 0 || rd.mathProbeOut.NewDebt.Cmp(wantDebt) != 0 {
-		return "the linked CollRebalancerMath disagrees with the local model"
-	}
-	return ""
 }
 
 // probeOutsideMulticall performs the two reads a multicall cannot: the swapper's flash
