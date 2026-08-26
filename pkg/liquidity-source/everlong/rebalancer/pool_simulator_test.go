@@ -3,6 +3,7 @@ package everlongrebalancer
 import (
 	"math/big"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -250,10 +251,10 @@ func newTestPoolSimulator(t *testing.T) *PoolSimulator {
 		ReservationPriceWad: uint256.MustFromDecimal("638569604086845466156025208308271"),
 	})
 	require.NoError(t, err)
-	// Keep this composed-venue fixture in the current CVAMM cache format. The profile
-	// hash deliberately mirrors that package's v1 configured-identity tuple; a future
-	// profile version must update this fixture rather than silently constructing a stale
-	// base pool.
+	// Keep this composed-venue fixture in the current CVAMM cache format. These two
+	// digests deliberately mirror that package's v1 configured-identity and immutable
+	// static-profile tuples; a future profile version must update this cross-package
+	// fixture rather than silently constructing a stale base pool.
 	baseProfile, err := json.Marshal(struct {
 		Version       uint64              `json:"version"`
 		DexID         string              `json:"dexId"`
@@ -267,7 +268,7 @@ func newTestPoolSimulator(t *testing.T) *PoolSimulator {
 		ALM: baseAddress,
 	})
 	require.NoError(t, err)
-	baseStatic, err := json.Marshal(everlongcvamm.StaticExtra{
+	baseStaticExtra := everlongcvamm.StaticExtra{
 		ProfileVersion:         1,
 		DexID:                  everlongcvamm.DexType,
 		ChainID:                valueobject.ChainIDBerachain,
@@ -277,7 +278,35 @@ func newTestPoolSimulator(t *testing.T) *PoolSimulator {
 		ConfigHash:             crypto.Keccak256Hash(baseProfile).Hex(),
 		Implementation:         "0x0a430e21ecad92d8eb556ff5101db9b973a6dba8",
 		ImplementationCodeHash: "0xcc6532930b94e24d165751accb1e4283bf6effe09e19e894ae2be5aa0643eba3",
+	}
+	staticProfile, err := json.Marshal(struct {
+		Version                uint64              `json:"version"`
+		DexID                  string              `json:"dexId"`
+		ChainID                valueobject.ChainID `json:"chainId"`
+		ALM                    string              `json:"alm"`
+		Token0                 string              `json:"token0"`
+		Token1                 string              `json:"token1"`
+		Implementation         string              `json:"implementation"`
+		ImplementationCodeHash string              `json:"implementationCodeHash"`
+		Adapter                string              `json:"adapter"`
+		GasStableIn            int64               `json:"gasStableIn"`
+		GasVolatileIn          int64               `json:"gasVolatileIn"`
+	}{
+		Version:                baseStaticExtra.ProfileVersion,
+		DexID:                  baseStaticExtra.DexID,
+		ChainID:                baseStaticExtra.ChainID,
+		ALM:                    baseStaticExtra.ALM,
+		Token0:                 baseStaticExtra.Token0,
+		Token1:                 baseStaticExtra.Token1,
+		Implementation:         baseStaticExtra.Implementation,
+		ImplementationCodeHash: strings.ToLower(baseStaticExtra.ImplementationCodeHash),
+		Adapter:                baseStaticExtra.Adapter,
+		GasStableIn:            baseStaticExtra.GasStableIn,
+		GasVolatileIn:          baseStaticExtra.GasVolatileIn,
 	})
+	require.NoError(t, err)
+	baseStaticExtra.ProfileHash = crypto.Keccak256Hash(staticProfile).Hex()
+	baseStatic, err := json.Marshal(baseStaticExtra)
 	require.NoError(t, err)
 	base, err := everlongcvamm.NewPoolSimulator(entity.Pool{
 		Address:     baseAddress,
@@ -294,6 +323,12 @@ func newTestPoolSimulator(t *testing.T) *PoolSimulator {
 	sim, err := NewPoolSimulatorWithBases(p, map[string]pool.IPoolSimulator{base.GetAddress(): base})
 	require.NoError(t, err)
 	return sim
+}
+
+func TestComposedCvammFixtureUsesCurrentProfile(t *testing.T) {
+	sim := newTestPoolSimulator(t)
+	require.NotNil(t, sim.basePool,
+		"the cross-package fixture must satisfy the current CVAMM cache profile")
 }
 
 // TestPreviewTokenAmountsMatchesDeployedSwapper: the ERC-4626 -> ALM proportional
