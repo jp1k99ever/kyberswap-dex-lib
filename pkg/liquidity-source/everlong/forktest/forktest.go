@@ -172,6 +172,7 @@ type Fill struct {
 func (f *Fork) Execute(t *testing.T, adapter common.Address, method string, data []byte,
 	amountIn *big.Int, tokenIn, tokenOut, holder, recipient common.Address) Fill {
 	t.Helper()
+	inputBefore := f.Balance(t, tokenIn, adapter)
 	f.Fund(t, tokenIn, holder, adapter, amountIn)
 
 	calldata, err := adapterABI.Pack(method, data, amountIn, tokenIn, tokenOut, recipient)
@@ -189,7 +190,9 @@ func (f *Fork) Execute(t *testing.T, adapter common.Address, method string, data
 	fill.GasUsed = rcpt.GasUsed
 	after := f.Balance(t, tokenOut, recipient)
 	require.Zero(t, new(big.Int).Sub(after, before).Cmp(fill.AmountOut), "recipient delta vs returned amountOut")
-	require.Zero(t, f.Balance(t, tokenIn, adapter).Cmp(fill.AmountUnused), "adapter leftover vs returned amountUnused")
+	wantInputAfter := new(big.Int).Add(inputBefore, fill.AmountUnused)
+	require.Zero(t, f.Balance(t, tokenIn, adapter).Cmp(wantInputAfter),
+		"adapter input delta vs returned amountUnused")
 	return fill
 }
 
@@ -198,6 +201,16 @@ func (f *Fork) Execute(t *testing.T, adapter common.Address, method string, data
 func (f *Fork) TryExecute(t *testing.T, adapter common.Address, method string, data []byte,
 	amountIn *big.Int, tokenIn, tokenOut, holder, recipient common.Address) error {
 	t.Helper()
+	// A refusal probe must not leave its funded input on a long-lived adapter. Snapshot
+	// the fork so the exact same caller can be used for caller-bound policy without
+	// polluting the later sequential fills.
+	var snapshotID string
+	require.NoError(t, f.RPC.CallContext(context.Background(), &snapshotID, "evm_snapshot"))
+	defer func() {
+		var reverted bool
+		require.NoError(t, f.RPC.CallContext(context.Background(), &reverted, "evm_revert", snapshotID))
+		require.True(t, reverted)
+	}()
 	f.Fund(t, tokenIn, holder, adapter, amountIn)
 	calldata, err := adapterABI.Pack(method, data, amountIn, tokenIn, tokenOut, recipient)
 	require.NoError(t, err)

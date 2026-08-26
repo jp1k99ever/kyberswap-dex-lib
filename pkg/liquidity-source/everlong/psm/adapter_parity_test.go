@@ -13,6 +13,7 @@ import (
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/liquidity-source/everlong/forktest"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/test"
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 // TestAdapterParity: quote -> executor `data` -> EverlongPsmAdapter fill on an anvil
@@ -23,9 +24,16 @@ func TestAdapterParity(t *testing.T) {
 	ctx := context.Background()
 	f := forktest.Start(t, forktest.ForkURL(psmForkFallback()))
 	f.MintNECT(t, new(big.Int).Mul(big.NewInt(500), big.NewInt(1e18)))
+	// The PSM policy is keyed by the calling contract. Deploy once before tracking,
+	// price that exact address and reuse it for every sequential fill, matching one
+	// production executor transaction rather than sampling address(0) and executing as
+	// a succession of unrelated adapters.
+	adapter := f.DeployAdapter(t, "EverlongPsmAdapter")
 
 	client := ethrpc.New(f.URL).SetMulticallContract(common.HexToAddress(forktest.Multicall3))
-	cfg := &Config{DexID: DexType, PSM: forktest.PSM, Stables: []string{forktest.HONEY}}
+	cfg := &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
+		PSM: forktest.PSM, Stables: []string{forktest.HONEY},
+		FeeCaller: adapter.Hex()}
 	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
 	require.Len(t, pools, 1)
@@ -33,6 +41,10 @@ func TestAdapterParity(t *testing.T) {
 	require.NoError(t, err)
 	sim, err := NewPoolSimulator(tracked)
 	require.NoError(t, err)
+	// This fork deploys the exact execution adapter before the snapshot, so these are
+	// today's live rates for the caller that actually settles every fill below.
+	require.Equal(t, "5", sim.Extra.EntryFeeBp.String())
+	require.Equal(t, "5", sim.Extra.ExitFeeBp.String())
 
 	debt, stable := sim.Info.Tokens[0], sim.Info.Tokens[1]
 	meta := sim.GetMetaInfo(stable, debt).(PoolMeta)
@@ -59,7 +71,6 @@ func TestAdapterParity(t *testing.T) {
 			TokenAmountIn: pool.TokenAmount{Token: c.tokenIn, Amount: c.amountIn}, TokenOut: tokenOut})
 		require.NoError(t, err, c.name)
 
-		adapter := f.DeployAdapter(t, "EverlongPsmAdapter")
 		fill := f.Execute(t, adapter, "executeEverlongPsm", data, c.amountIn,
 			common.HexToAddress(c.tokenIn), common.HexToAddress(tokenOut), whale, recipient)
 

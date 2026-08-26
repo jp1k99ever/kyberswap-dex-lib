@@ -6,11 +6,31 @@ import (
 
 // StaticExtra is immutable per pool (one pool per whitelisted stable).
 type StaticExtra struct {
-	PSM string `json:"psm"`
+	// ProfileVersion forces pools persisted before the exact production attestation to
+	// relist rather than silently retaining the former generic-hook behavior.
+	ProfileVersion uint8  `json:"profileVersion"`
+	PSM            string `json:"psm"`
+	// PSMCodeHash pins the reviewed direct PermissionlessPSM runtime. Hook topology
+	// alone cannot attest the venue's accounting and partial-fill semantics.
+	PSMCodeHash string `json:"psmCodeHash"`
+	DebtToken   string `json:"debtToken"`
+	Stable      string `json:"stable"`
 	// MetaCore is the protocol core whose paused() the PSM ORs into its own on every
 	// swap (`notPaused` checks `paused || metaCore.paused()`). Immutable on the PSM (set
 	// in the constructor, no setter), so it is resolved once at listing.
 	MetaCore string `json:"metaCore,omitempty"`
+	// FeeCaller is the exact direct EverlongPsmAdapter address presented to feeBpFor at
+	// execution. Caller policy is address-keyed, and the runtime hash prevents a wrong
+	// unrelated contract from satisfying the nonzero-code check.
+	FeeCaller         string `json:"feeCaller"`
+	FeeCallerCodeHash string `json:"feeCallerCodeHash"`
+	// FeeHook and its runtime hash pin the only book-independent policy implementation
+	// whose sampled rates UpdateBalance is allowed to reuse within a route.
+	FeeHook         string `json:"feeHook"`
+	FeeHookCodeHash string `json:"feeHookCodeHash"`
+	// The supported topology has one append-only listed stable and no cap/yield hooks.
+	// The tracker re-attests those live pointers and the list cardinality every refresh.
+	ListedStableCount int `json:"listedStableCount"`
 	// WadOffset = 10^(debtToken.decimals - stable.decimals); frozen at whitelisting
 	// (re-whitelisting after a decimals change would re-derive it, which also re-lists
 	// the pool).
@@ -22,30 +42,21 @@ type StaticExtra struct {
 
 // Extra is the per-refresh snapshot the simulator prices from.
 type Extra struct {
-	Paused bool `json:"paused"`
-	// feeBpFor for the configured caller: the FINISHED rate, not a hook parameter. nil
-	// when the PSM refuses to price that direction. Sampled pre-trade like every PSM
-	// entry point, so a second fill in one route reuses a rate the chain would re-read.
+	Paused    bool `json:"paused"`
+	PSMBonded bool `json:"psmBonded"`
+	// feeBpFor for the exact configured execution caller: the FINISHED rate, not a hook
+	// parameter. The attested PsmFlatFeeHook is book-independent, so this rate remains
+	// exact after UpdateBalance; another runtime or caller never reaches the simulator.
 	EntryFeeBp *big.Int `json:"entryBp,omitempty"`
 	ExitFeeBp  *big.Int `json:"exitBp,omitempty"`
-	// Mint room after BOTH the structural mintCap and the cap hook.
+	// Mint room under the structural mintCap. A nonzero cap hook is unsupported.
 	AvailableMint *big.Int `json:"availMint"`
 	// Per-stable book; the redeem burn cannot exceed it (the chain underflows past it).
 	DebtTokenMinted *big.Int `json:"minted"`
-	// Cap hook's single-burn ceiling; nil when no cap hook is set.
-	MaxRedeem *big.Int `json:"maxRedeem,omitempty"`
-	// Cap hook's per-caller ceiling on the stable leaving (output + fee), for the
-	// configured FeeCaller. Independent of MaxRedeem and reverts the same way. The
-	// adapter re-reads it for ITSELF at execution, so this only has to be right enough
-	// to route; see Config.FeeCaller.
-	MaxOutflow *big.Int `json:"maxOutflow,omitempty"`
-	// Stable payable right now: idle balance plus recallable yield-hook float.
+	// Stable payable right now. A nonzero yield hook is unsupported, so this is idle
+	// HONEY held directly by the PSM and can be replayed exactly.
 	AvailableReserve *big.Int `json:"reserve"`
 }
-
-// A cap hook can also refuse a fill outright through onPSMDeposit/onPSMWithdraw, which
-// mutate and whose REVERT is the enforcement — no view exposes them, so no quote can
-// predict them. Such a fill fails at execution rather than partial-filling.
 
 // SwapInfo carries the exact fill so UpdateBalance replays it without recomputation.
 type SwapInfo struct {

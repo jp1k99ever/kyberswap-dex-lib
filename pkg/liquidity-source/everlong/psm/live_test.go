@@ -17,6 +17,21 @@ import (
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
+const (
+	livePSM   = "0x0999417c0f9ded4356B099bcC83A16437B841323"
+	liveHoney = "0xFCBD14DC51f0A4d49d5E53C2E0950e0bC26d0Dce"
+	liveNECT  = "0x1cE0a25D13CE4d52071aE7e02Cf1F6606F4C79d3"
+	// Read-only policy probes only. Neither address is a production adapter config: the
+	// adapter parity test deploys the actual execution contract before listing and binds
+	// FeeCaller to it. The ordinary contract currently pays 5/5; the savings vault is an
+	// actual PSM caller with an explicit exemption and pays 0/0.
+	liveOrdinaryCallerProbe = "0x27775EC38E2b394738B73C0D25f63e20063DF054"
+	liveEmptyCodeCaller     = "0x1111111111111111111111111111111111111111"
+	// This deployed contract is explicitly feeExempt on PsmFlatFeeHook. It proves why
+	// caller identity must be pinned rather than inferred from a few ordinary callers.
+	liveExemptFeeCaller = "0x3eb566c0776d250522fdb3fcc8c010a31627f655"
+)
+
 // TestLiveListTrackQuote runs lister -> tracker -> simulator against the deployed
 // Berachain PermissionlessPSM. The deployment's capacity words are governance-settable,
 // so quotes must either succeed or fail with a documented sentinel — a decode error or
@@ -28,10 +43,11 @@ func TestLiveListTrackQuote(t *testing.T) {
 	client := ethrpc.New(berachainPsmRPCURL()).
 		SetMulticallContract(common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"))
 	cfg := &Config{
-		DexID:   DexType,
-		ChainID: valueobject.ChainIDBerachain,
-		PSM:     "0x0999417c0f9ded4356B099bcC83A16437B841323",
-		Stables: []string{"0xFCBD14DC51f0A4d49d5E53C2E0950e0bC26d0Dce"}, // HONEY
+		DexID:     DexType,
+		ChainID:   valueobject.ChainIDBerachain,
+		PSM:       livePSM,
+		Stables:   []string{liveHoney},
+		FeeCaller: liveProductionAdapter(t),
 	}
 
 	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
@@ -45,13 +61,12 @@ func TestLiveListTrackQuote(t *testing.T) {
 	require.NoError(t, err)
 	debt, stable := sim.Info.Tokens[0], sim.Info.Tokens[1]
 
-	// The rate legs must actually decode: the deployment's capacity is currently zero,
-	// so every quote below short-circuits on a capacity sentinel and would pass even if
-	// the fee reads had silently failed.
+	// The configured non-exempt contract currently pays the flat 5/5 bp production rate.
 	e := sim.Extra
 	require.NotNil(t, e.EntryFeeBp, "entry rate must decode through feeBpFor")
 	require.NotNil(t, e.ExitFeeBp, "exit rate must decode through feeBpFor")
-	require.True(t, e.EntryFeeBp.Sign() > 0, "the PSM refuses a zero entry toll")
+	require.Equal(t, "5", e.EntryFeeBp.String())
+	require.Equal(t, "5", e.ExitFeeBp.String())
 	require.True(t, e.EntryFeeBp.Cmp(bigBp) < 0 && e.ExitFeeBp.Cmp(bigBp) < 0,
 		"rates are bounded below 100%%: entry %s exit %s", e.EntryFeeBp, e.ExitFeeBp)
 	require.NotNil(t, e.AvailableMint)
@@ -87,53 +102,73 @@ func berachainPsmRPCURL() string {
 	return "https://rpc.berachain.com"
 }
 
-// TestFeeIsCallerInvariant guards the one assumption Config.FeeCaller rests on. The
-// tracker prices for FeeCaller while the fill is made BY THE ADAPTER, so the two agree
-// only while the hook charges every caller the same. The moment a per-caller entry
-// appears this fails, and FeeCaller must be set to the deployed adapter address.
-func TestFeeIsCallerInvariant(t *testing.T) {
+func liveProductionAdapter(t *testing.T) string {
+	t.Helper()
+	address := os.Getenv("EVERLONG_PSM_FEE_CALLER")
+	if address == "" {
+		t.Skip("EVERLONG_PSM_FEE_CALLER not set: no production EverlongPsmAdapter deployment is recorded")
+	}
+	require.True(t, common.IsHexAddress(address))
+	return address
+}
+
+// TestFeeIsCallerBound proves the live hook is not caller-invariant: an ordinary
+// contract pays 5/5 bp while an explicitly exempt contract pays 0/0. The tracker must
+// sample the exact execution address and must not substitute address(0) or an EOA.
+func TestFeeIsCallerBound(t *testing.T) {
 	test.SkipCI(t)
 	ctx := context.Background()
 
 	client := ethrpc.New(berachainPsmRPCURL()).
 		SetMulticallContract(common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"))
-	const honey = "0xFCBD14DC51f0A4d49d5E53C2E0950e0bC26d0Dce"
+	var bonded bool
+	_, err := client.NewRequest().SetContext(ctx).AddCall(&ethrpc.Call{
+		ABI: debtTokenABI, Target: liveNECT, Method: debtTokenMethodPSMBonds,
+		Params: []any{common.HexToAddress(livePSM)},
+	}, []any{&bonded}).Aggregate()
+	require.NoError(t, err)
+	require.True(t, bonded, "revoking DebtToken.PSMBonds closes both swap directions")
 
 	var rates []string
-	for _, caller := range []string{
-		"0x0000000000000000000000000000000000000000", // the default
-		"0x4A964e9658792f294AF4BF923ca1A38F6FBa0896", // a real trading EOA
-		"0x1111111111111111111111111111111111111111", // an arbitrary address
-	} {
-		cfg := &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
-			PSM:     "0x0999417c0f9ded4356B099bcC83A16437B841323",
-			Stables: []string{honey}, FeeCaller: caller}
-		pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
+	for _, caller := range []string{liveOrdinaryCallerProbe, liveExemptFeeCaller} {
+		entry, exit := new(big.Int), new(big.Int)
+		_, err = client.NewRequest().SetContext(ctx).
+			AddCall(&ethrpc.Call{ABI: psmABI, Target: livePSM, Method: psmMethodFeeBpFor,
+				Params: []any{common.HexToAddress(caller), common.HexToAddress(liveHoney), true}}, []any{&entry}).
+			AddCall(&ethrpc.Call{ABI: psmABI, Target: livePSM, Method: psmMethodFeeBpFor,
+				Params: []any{common.HexToAddress(caller), common.HexToAddress(liveHoney), false}}, []any{&exit}).
+			Aggregate()
 		require.NoError(t, err)
-		tracked, err := NewPoolTracker(cfg, client).GetNewPoolState(ctx, pools[0], pool.GetNewPoolStateParams{})
-		require.NoError(t, err)
-		sim, err := NewPoolSimulator(tracked)
-		require.NoError(t, err)
-		require.NotNil(t, sim.Extra.EntryFeeBp)
-		rates = append(rates, sim.Extra.EntryFeeBp.String()+"/"+sim.Extra.ExitFeeBp.String())
+		rates = append(rates, entry.String()+"/"+exit.String())
 	}
-	for i := 1; i < len(rates); i++ {
-		require.Equal(t, rates[0], rates[i],
-			"the PSM now prices per caller — set Config.FeeCaller to the deployed adapter address")
-	}
-	t.Logf("fee is caller-invariant at %s bp; the zero-address default is safe", rates[0])
+	require.Equal(t, []string{"5/5", "0/0"}, rates)
 }
 
-// TestTrackerStampsBlockNumber: the snapshot must carry its block — the cap-hook round
-// is pinned to it, and TryAggregate returned none, leaving that round on `latest`.
+// TestListerRejectsEmptyCodeFeeCaller guards the operator boundary: FeeCaller is an
+// execution contract, not an EOA or placeholder. Its code is checked at the exact block
+// used for the topology/rate snapshot.
+func TestListerRejectsEmptyCodeFeeCaller(t *testing.T) {
+	test.SkipCI(t)
+	ctx := context.Background()
+	client := ethrpc.New(berachainPsmRPCURL()).
+		SetMulticallContract(common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"))
+	cfg := &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
+		PSM: livePSM, Stables: []string{liveHoney}, FeeCaller: liveEmptyCodeCaller}
+
+	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
+	require.ErrorIs(t, err, ErrUnsupportedProfile)
+	require.Empty(t, pools)
+}
+
+// TestTrackerStampsBlockNumber: the snapshot must carry the exact block shared by the
+// Multicall state and out-of-band code attestation.
 func TestTrackerStampsBlockNumber(t *testing.T) {
 	test.SkipCI(t)
 	ctx := context.Background()
 	client := ethrpc.New(berachainPsmRPCURL()).
 		SetMulticallContract(common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"))
 	cfg := &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
-		PSM:     "0x0999417c0f9ded4356B099bcC83A16437B841323",
-		Stables: []string{"0xFCBD14DC51f0A4d49d5E53C2E0950e0bC26d0Dce"}}
+		PSM: livePSM, Stables: []string{liveHoney}, FeeCaller: liveProductionAdapter(t)}
 
 	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
@@ -145,20 +180,15 @@ func TestTrackerStampsBlockNumber(t *testing.T) {
 	require.NotZero(t, tracked.BlockNumber, "the tracker must stamp the block it read at")
 }
 
-// TestListerCursorDoesNotRelist: with one listed and one un-whitelisted candidate, a latch
-// either re-emits the listed pool on every poll or never picks the second one up. The
-// cursor does neither.
-func TestListerCursorDoesNotRelist(t *testing.T) {
+// TestListerProfileCursor re-attests the live profile on every poll, emits nothing when
+// its static fingerprint is unchanged, and upgrades the old map-only cursor once.
+func TestListerProfileCursor(t *testing.T) {
 	test.SkipCI(t)
 	ctx := context.Background()
 	client := ethrpc.New(berachainPsmRPCURL()).
 		SetMulticallContract(common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"))
 	cfg := &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
-		PSM: "0x0999417c0f9ded4356B099bcC83A16437B841323",
-		Stables: []string{
-			"0xFCBD14DC51f0A4d49d5E53C2E0950e0bC26d0Dce", // HONEY, whitelisted
-			"0x549943e04f40284185054145c6E4e9568C1D3241", // not whitelisted
-		}}
+		PSM: livePSM, Stables: []string{liveHoney}, FeeCaller: liveProductionAdapter(t)}
 
 	u := NewPoolsListUpdater(cfg, client)
 	first, meta, err := u.GetNewPools(ctx, nil)
@@ -169,9 +199,12 @@ func TestListerCursorDoesNotRelist(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, second, "an already-listed pool must not be emitted again")
 
-	// The un-whitelisted candidate stays a candidate, so it is picked up if it is listed later.
 	var m Metadata
 	require.NoError(t, json.Unmarshal(meta2, &m))
-	require.True(t, m.Listed["0xfcbd14dc51f0a4d49d5e53c2e0950e0bc26d0dce"])
-	require.False(t, m.Listed["0x549943e04f40284185054145c6e4e9568c1d3241"])
+	require.NotEmpty(t, m.Profile)
+
+	legacy := []byte(`{"listed":{"0xfcbd14dc51f0a4d49d5e53c2e0950e0bc26d0dce":true}}`)
+	relisted, _, err := u.GetNewPools(ctx, legacy)
+	require.NoError(t, err)
+	require.Len(t, relisted, 1, "old metadata must relist to acquire profile attestation")
 }

@@ -18,6 +18,7 @@ import (
 	everlongpsm "github.com/KyberNetwork/kyberswap-dex-lib/pkg/liquidity-source/everlong/psm"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/test"
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 // TestDifferentialFuzz is the executor-path proof at scale: on one anvil fork, a seeded
@@ -43,6 +44,12 @@ func TestDifferentialFuzz(t *testing.T) {
 	ctx := context.Background()
 	f := forktest.Start(t, forktest.ForkURL(berachainRPCURL()))
 	f.MintNECT(t, new(big.Int).Mul(big.NewInt(80_000), big.NewInt(1e18)))
+	// Deploy each execution contract once and reuse it throughout the sequence. The PSM
+	// fee policy is keyed by this address, so pricing a zero/temporary caller and then
+	// deploying a fresh adapter for the fill is not a valid differential oracle.
+	cvammAdapter := f.DeployAdapter(t, "EverlongCvammAdapter")
+	psmAdapter := f.DeployAdapter(t, "EverlongPsmAdapter")
+	rebalancerAdapter := f.DeployAdapter(t, "EverlongRebalancerAdapter")
 	client := ethrpc.New(f.URL).SetMulticallContract(common.HexToAddress(forktest.Multicall3))
 
 	// listings (static) once
@@ -54,7 +61,9 @@ func TestDifferentialFuzz(t *testing.T) {
 	cvCfg := &everlongcvamm.Config{DexID: everlongcvamm.DexType, ALMs: []everlongcvamm.ALMConfig{{Address: se.UnderlyingCvamm}}}
 	cvPools, _, err := everlongcvamm.NewPoolsListUpdater(cvCfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
-	psmCfg := &everlongpsm.Config{DexID: everlongpsm.DexType, PSM: forktest.PSM, Stables: []string{forktest.HONEY}}
+	psmCfg := &everlongpsm.Config{DexID: everlongpsm.DexType, ChainID: valueobject.ChainIDBerachain,
+		PSM:     forktest.PSM,
+		Stables: []string{forktest.HONEY}, FeeCaller: psmAdapter.Hex()}
 	psmPools, _, err := everlongpsm.NewPoolsListUpdater(psmCfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
 	require.Len(t, psmPools, 1)
@@ -72,7 +81,7 @@ func TestDifferentialFuzz(t *testing.T) {
 
 	type venue struct {
 		name     string
-		adapter  string
+		adapter  common.Address
 		method   string
 		quote    func() (q *pool.CalcAmountOutResult, data []byte, tokenIn, tokenOut string, amountIn *big.Int, err error)
 		hintFree func(tokenIn, tokenOut string) []byte
@@ -87,7 +96,7 @@ func TestDifferentialFuzz(t *testing.T) {
 	settled, refused := map[string]int{}, map[string]int{}
 
 	venues := []venue{
-		{name: "cvamm", adapter: "EverlongCvammAdapter", method: "executeEverlongCvamm", hintFree: func(string, string) []byte {
+		{name: "cvamm", adapter: cvammAdapter, method: "executeEverlongCvamm", hintFree: func(string, string) []byte {
 			return forktest.Words(se.UnderlyingCvamm)
 		}, quote: func() (*pool.CalcAmountOutResult, []byte, string, string, *big.Int, error) {
 			tracked, err := everlongcvamm.NewPoolTracker(cvCfg, client).GetNewPoolState(ctx, cvPools[0], pool.GetNewPoolStateParams{})
@@ -102,7 +111,7 @@ func TestDifferentialFuzz(t *testing.T) {
 			q, err := sim.CalcAmountOut(pool.CalcAmountOutParams{TokenAmountIn: pool.TokenAmount{Token: tokenIn, Amount: amountIn}, TokenOut: tokenOut})
 			return q, forktest.Words(meta.ALM), tokenIn, tokenOut, amountIn, err
 		}},
-		{name: "psm", adapter: "EverlongPsmAdapter", method: "executeEverlongPsm", hintFree: func(string, string) []byte {
+		{name: "psm", adapter: psmAdapter, method: "executeEverlongPsm", hintFree: func(string, string) []byte {
 			return forktest.Words(forktest.PSM, forktest.NECT)
 		}, quote: func() (*pool.CalcAmountOutResult, []byte, string, string, *big.Int, error) {
 			tracked, err := everlongpsm.NewPoolTracker(psmCfg, client).GetNewPoolState(ctx, psmPools[0], pool.GetNewPoolStateParams{})
@@ -118,7 +127,7 @@ func TestDifferentialFuzz(t *testing.T) {
 			q, err := sim.CalcAmountOut(pool.CalcAmountOutParams{TokenAmountIn: pool.TokenAmount{Token: tokenIn, Amount: amountIn}, TokenOut: tokenOut})
 			return q, forktest.Words(meta.PSM, debt), tokenIn, tokenOut, amountIn, err
 		}},
-		{name: "rebalancer", adapter: "EverlongRebalancerAdapter", method: "executeEverlongRebalancer", hintFree: func(string, string) []byte {
+		{name: "rebalancer", adapter: rebalancerAdapter, method: "executeEverlongRebalancer", hintFree: func(string, string) []byte {
 			return forktest.Words(rebMeta.Swapper, rebPools[0].Tokens[0].Address, new(big.Int), new(big.Int), rebMeta.Math, rebMeta.LeverageRatioWad)
 		}, quote: func() (*pool.CalcAmountOutResult, []byte, string, string, *big.Int, error) {
 			tracked, err := NewPoolTracker(rebCfg, client).GetNewPoolState(ctx, rebPools[0], pool.GetNewPoolStateParams{})
@@ -158,8 +167,7 @@ func TestDifferentialFuzz(t *testing.T) {
 			// The converse proof: a fill the simulator refuses must fail on chain too, else
 			// the simulator is hiding liquidity. Probed hint-free through the adapter.
 			if f.Balance(t, common.HexToAddress(tokenIn), whale).Cmp(amountIn) >= 0 {
-				probe := f.DeployAdapter(t, v.adapter)
-				callErr := f.TryExecute(t, probe, v.method, v.hintFree(tokenIn, tokenOut), amountIn,
+				callErr := f.TryExecute(t, v.adapter, v.method, v.hintFree(tokenIn, tokenOut), amountIn,
 					common.HexToAddress(tokenIn), common.HexToAddress(tokenOut), whale, recipient)
 				require.Error(t, callErr, "#%d %s: simulator refused (%v) but the venue fills %s of %s", i, v.name, err, amountIn, tokenIn)
 			}
@@ -172,8 +180,7 @@ func TestDifferentialFuzz(t *testing.T) {
 			refused[v.name]++
 			continue
 		}
-		adapter := f.DeployAdapter(t, v.adapter)
-		fill := f.Execute(t, adapter, v.method, data, amountIn,
+		fill := f.Execute(t, v.adapter, v.method, data, amountIn,
 			common.HexToAddress(tokenIn), common.HexToAddress(tokenOut), whale, recipient)
 		require.Zero(t, fill.AmountOut.Cmp(q.TokenAmountOut.Amount),
 			"#%d %s: amountOut adapter %s vs quote %s (in %s of %s)", i, v.name, fill.AmountOut, q.TokenAmountOut.Amount, amountIn, tokenIn)

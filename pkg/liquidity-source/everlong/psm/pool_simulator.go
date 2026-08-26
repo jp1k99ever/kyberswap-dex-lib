@@ -2,6 +2,7 @@ package everlongpsm
 
 import (
 	"math/big"
+	"strings"
 
 	"github.com/goccy/go-json"
 	"github.com/samber/lo"
@@ -14,8 +15,9 @@ import (
 // PoolSimulator prices one (debtToken, stable) pair of an Everlong PermissionlessPSM:
 // 1:1 with decimal scaling (wadOffset), a bp fee from the fee hook, a per-stable mint
 // cap on the deposit direction and the PSM's physical stable reserve plus the per-stable
-// minted total bounding the redeem direction. Pure-integer port of PermissionlessPSM
-// (previewDeposit / previewRedeem plus the execution-path cap and accounting checks).
+// minted total bounding the redeem direction. The accepted production topology has no
+// cap/yield hooks and pins a reviewed, book-independent flat-fee runtime, so every
+// route-local state transition below is execution-exact rather than a hook bound.
 //
 // Token order: [0] = debtToken (e.g. NECT/EverUSD), [1] = stable (e.g. USDC).
 type PoolSimulator struct {
@@ -39,6 +41,16 @@ func NewPoolSimulator(p entity.Pool) (*PoolSimulator, error) {
 	if err := json.Unmarshal([]byte(p.StaticExtra), &staticExtra); err != nil {
 		return nil, err
 	}
+	if err := staticExtra.validateProductionProfile(); err != nil {
+		return nil, err
+	}
+	if err := extra.validateProductionSnapshot(); err != nil {
+		return nil, err
+	}
+	if len(p.Tokens) != 2 || !strings.EqualFold(p.Tokens[0].Address, staticExtra.DebtToken) ||
+		!strings.EqualFold(p.Tokens[1].Address, staticExtra.Stable) {
+		return nil, ErrUnsupportedProfile
+	}
 	return &PoolSimulator{
 		Pool: pool.Pool{Info: pool.PoolInfo{
 			Address:     p.Address,
@@ -54,6 +66,12 @@ func NewPoolSimulator(p entity.Pool) (*PoolSimulator, error) {
 }
 
 func (s *PoolSimulator) CalcAmountOut(params pool.CalcAmountOutParams) (*pool.CalcAmountOutResult, error) {
+	// Pool simulators can arrive through msgpack without NewPoolSimulator running. Recheck
+	// the complete attestation and mutable snapshot on every quote so legacy/corrupt
+	// objects cannot bypass the constructor and produce a route.
+	if err := s.validateProductionSnapshot(); err != nil {
+		return nil, err
+	}
 	indexIn, indexOut := s.GetTokenIndex(params.TokenAmountIn.Token), s.GetTokenIndex(params.TokenOut)
 	if indexIn < 0 || indexOut < 0 || indexIn == indexOut {
 		return nil, ErrInvalidToken
@@ -73,6 +91,20 @@ func (s *PoolSimulator) CalcAmountOut(params pool.CalcAmountOutParams) (*pool.Ca
 		return s.calcDeposit(params, amountIn)
 	}
 	return s.calcRedeem(params, amountIn) // debt -> stable: redeem
+}
+
+func (s *PoolSimulator) validateProductionSnapshot() error {
+	if s == nil {
+		return ErrInvalidSnapshot
+	}
+	if err := s.StaticExtra.validateProductionProfile(); err != nil {
+		return err
+	}
+	if len(s.Info.Tokens) != 2 || !strings.EqualFold(s.Info.Tokens[0], s.StaticExtra.DebtToken) ||
+		!strings.EqualFold(s.Info.Tokens[1], s.StaticExtra.Stable) {
+		return ErrUnsupportedProfile
+	}
+	return s.Extra.validateProductionSnapshot()
 }
 
 // calcDeposit ports previewDeposit + the execution cap check: gross = in * wadOffset,
@@ -128,9 +160,9 @@ func (s *PoolSimulator) calcDeposit(params pool.CalcAmountOutParams,
 // calcRedeem ports previewRedeem + the execution accounting: gross = in / wadOffset
 // (floor — sub-offset dust would burn for nothing, so the unusable remainder is
 // returned instead), fee = ceil(gross * bp / 1e4) paid in stable, out = gross - fee.
-// The burn cannot exceed debtTokenMinted[stable] nor the cap hook's single-swap
-// ceiling, and the stable leaving cannot exceed what the PSM can pay out; the input is
-// clamped to all three so oversized orders partial-fill.
+// The burn cannot exceed debtTokenMinted[stable], and the stable leaving cannot exceed
+// what the hook-free PSM can pay out; the input is clamped to both so oversized orders
+// partial-fill.
 func (s *PoolSimulator) calcRedeem(params pool.CalcAmountOutParams,
 	amountIn *big.Int) (*pool.CalcAmountOutResult, error) {
 	e, w := &s.Extra, s.StaticExtra.WadOffset
@@ -147,22 +179,8 @@ func (s *PoolSimulator) calcRedeem(params pool.CalcAmountOutParams,
 	if e.DebtTokenMinted.Sign() == 0 || e.AvailableReserve.Sign() == 0 {
 		return nil, ErrNothingToRedeem
 	}
-	// burn bound, cap-hook bound, and reserve bound (gross stable = out + fee = in/w floor)
+	// Burn bound and reserve bound (gross stable = out + fee = in/w floor).
 	maxIn := new(big.Int).Set(e.DebtTokenMinted)
-	if e.MaxRedeem != nil && e.MaxRedeem.Cmp(maxIn) < 0 {
-		maxIn = new(big.Int).Set(e.MaxRedeem)
-	}
-	// The hook's per-caller ceiling bounds the stable LEAVING (output + fee), so it
-	// converts back through the offset. Treated as PER-CALL, matching the PSM's own
-	// check (`_payOut` compares one call's `owed` against it and accumulates nothing).
-	// A hook that instead spends a running budget in onPSMWithdraw would need
-	// UpdateBalance to consume this; until one exists that is unmodellable, and the
-	// adapter re-reads the ceiling live, so an over-quote partial-fills.
-	if e.MaxOutflow != nil {
-		if outflowIn := new(big.Int).Mul(e.MaxOutflow, w); outflowIn.Cmp(maxIn) < 0 {
-			maxIn = outflowIn
-		}
-	}
 	var reserveBound big.Int
 	reserveBound.Mul(e.AvailableReserve, w) // any in <= reserve*w has gross <= reserve
 	if reserveBound.Cmp(maxIn) < 0 {
@@ -237,8 +255,6 @@ func (s *PoolSimulator) UpdateBalance(params pool.UpdateBalanceParams) {
 	if e.AvailableMint.Sign() < 0 {
 		e.AvailableMint = new(big.Int)
 	}
-	// MaxRedeem and MaxOutflow are deliberately NOT consumed: both are per-call ceilings
-	// on-chain, not budgets a route draws down (see calcRedeem).
 	s.Info.Reserves = []*big.Int{new(big.Int).Set(e.AvailableMint), new(big.Int).Set(e.AvailableReserve)}
 }
 

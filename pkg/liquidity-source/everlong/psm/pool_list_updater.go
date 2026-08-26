@@ -3,7 +3,6 @@ package everlongpsm
 import (
 	"context"
 	"math/big"
-	"strings"
 	"time"
 
 	"github.com/KyberNetwork/ethrpc"
@@ -20,11 +19,11 @@ type PoolsListUpdater struct {
 	ethrpcClient *ethrpc.Client
 }
 
-// Metadata is the listing cursor: the stables already listed. A single latch cannot
-// express this — a stable whitelisted later must be picked up without re-emitting the
-// ones already listed, and a latch does one or the other.
+// Metadata binds the emitted pool to its exact static production profile. Old cursors
+// had only a `listed` map; they decode with an empty Profile and therefore relist once
+// so persisted pools acquire the fee-hook/caller/topology attestation.
 type Metadata struct {
-	Listed map[string]bool `json:"listed"`
+	Profile string `json:"profile,omitempty"`
 }
 
 var _ = poollist.RegisterFactoryCE(DexType, NewPoolsListUpdater)
@@ -36,100 +35,117 @@ func NewPoolsListUpdater(cfg *Config, ethrpcClient *ethrpc.Client) *PoolsListUpd
 	}
 }
 
-// GetNewPools lists one pool per configured stable the PSM reports as whitelisted
-// (stables(addr) != 0, which also yields the frozen decimals offset). The debt token is
-// resolved from the PSM so only the PSM address and stable candidates are configuration.
+// GetNewPools lists the sole supported (debtToken, stable) pair only after one pinned
+// snapshot proves the exact production topology: the reviewed PsmFlatFeeHook runtime,
+// no cap/yield hooks, one listed stable equal to config, a nonzero execution caller and
+// a valid sampled fee in both directions. It keeps re-attesting after listing; mutable
+// scalar rates do not relist because the tracker refreshes them every block.
 func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte) ([]entity.Pool, []byte, error) {
-	metadata := Metadata{Listed: map[string]bool{}}
+	var metadata Metadata
 	if len(metadataBytes) > 0 {
 		if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
 			return nil, metadataBytes, err
 		}
-		if metadata.Listed == nil {
-			metadata.Listed = map[string]bool{}
-		}
 	}
 
-	var candidates []string
-	for _, stable := range u.config.Stables {
-		if !metadata.Listed[strings.ToLower(stable)] {
-			candidates = append(candidates, stable)
-		}
-	}
-	if len(candidates) == 0 {
-		return nil, metadataBytes, nil
+	psm, stable, feeCaller, err := configuredAddresses(u.config)
+	if err != nil {
+		return nil, metadataBytes, err
 	}
 
 	var (
-		debtToken  gethcommon.Address
-		metaCore   gethcommon.Address
-		wadOffsets = make([]uint64, len(candidates))
+		debtToken, metaCore, feeHook, capHook, yieldHook, listedStable gethcommon.Address
+		listedStablesLength                                            = new(big.Int)
+		wadOffset                                                      uint64
+		entryFee, exitFee                                              = new(big.Int), new(big.Int)
 	)
 	req := u.ethrpcClient.NewRequest().SetContext(ctx)
 	req.AddCall(&ethrpc.Call{
 		ABI:    psmABI,
-		Target: u.config.PSM,
+		Target: hexutil.Encode(psm[:]),
 		Method: psmMethodDebtToken,
-	}, []any{&debtToken})
-	req.AddCall(&ethrpc.Call{
+	}, []any{&debtToken}).AddCall(&ethrpc.Call{
 		ABI:    psmABI,
-		Target: u.config.PSM,
+		Target: hexutil.Encode(psm[:]),
 		Method: psmMethodMetaCore,
-	}, []any{&metaCore})
-	for i, stable := range candidates {
-		req.AddCall(&ethrpc.Call{
-			ABI:    psmABI,
-			Target: u.config.PSM,
-			Method: psmMethodStables,
-			Params: []any{gethcommon.HexToAddress(stable)},
-		}, []any{&wadOffsets[i]})
-	}
+	}, []any{&metaCore}).AddCall(&ethrpc.Call{
+		ABI: psmABI, Target: hexutil.Encode(psm[:]), Method: psmMethodFeeHook,
+	}, []any{&feeHook}).AddCall(&ethrpc.Call{
+		ABI: psmABI, Target: hexutil.Encode(psm[:]), Method: psmMethodCapHook,
+	}, []any{&capHook}).AddCall(&ethrpc.Call{
+		ABI: psmABI, Target: hexutil.Encode(psm[:]), Method: psmMethodYieldHook,
+	}, []any{&yieldHook}).AddCall(&ethrpc.Call{
+		ABI: psmABI, Target: hexutil.Encode(psm[:]), Method: psmMethodListedLength,
+	}, []any{&listedStablesLength}).AddCall(&ethrpc.Call{
+		ABI: psmABI, Target: hexutil.Encode(psm[:]), Method: psmMethodListedStables,
+		Params: []any{big.NewInt(0)},
+	}, []any{&listedStable}).AddCall(&ethrpc.Call{
+		ABI: psmABI, Target: hexutil.Encode(psm[:]), Method: psmMethodStables,
+		Params: []any{stable},
+	}, []any{&wadOffset}).AddCall(&ethrpc.Call{
+		ABI: psmABI, Target: hexutil.Encode(psm[:]), Method: psmMethodFeeBpFor,
+		Params: []any{feeCaller, stable, true},
+	}, []any{&entryFee}).AddCall(&ethrpc.Call{
+		ABI: psmABI, Target: hexutil.Encode(psm[:]), Method: psmMethodFeeBpFor,
+		Params: []any{feeCaller, stable, false},
+	}, []any{&exitFee})
 	resp, err := req.Aggregate()
 	if err != nil {
-		return nil, nil, err
+		return nil, metadataBytes, err
 	}
-	var blockNumber uint64
-	if resp.BlockNumber != nil {
-		blockNumber = resp.BlockNumber.Uint64()
-	}
-
-	if debtToken == (gethcommon.Address{}) {
-		return nil, metadataBytes, ErrInvalidSnapshot // a PSM with no debt token lists nothing
-	}
-	debt := hexutil.Encode(debtToken[:])
-	pools := make([]entity.Pool, 0, len(candidates))
-	for i, stable := range candidates {
-		if wadOffsets[i] == 0 { // not whitelisted (yet) — skip, re-listing picks it up
-			continue
-		}
-		staticExtra, err := json.Marshal(StaticExtra{
-			PSM:        strings.ToLower(u.config.PSM),
-			MetaCore:   hexutil.Encode(metaCore[:]),
-			WadOffset:  new(big.Int).SetUint64(wadOffsets[i]),
-			GasDeposit: u.config.GasDeposit,
-			GasRedeem:  u.config.GasRedeem,
-		})
-		if err != nil {
-			return nil, metadataBytes, err
-		}
-		metadata.Listed[strings.ToLower(stable)] = true
-		pools = append(pools, entity.Pool{
-			// one pool per (psm, stable) pair
-			Address:   strings.ToLower(u.config.PSM) + "-" + strings.ToLower(stable),
-			Exchange:  u.config.DexID,
-			Type:      DexType,
-			Timestamp: time.Now().Unix(),
-			Tokens: []*entity.PoolToken{
-				{Address: debt, Swappable: true},
-				{Address: strings.ToLower(stable), Swappable: true},
-			},
-			Reserves:    entity.PoolReserves{"0", "0"},
-			StaticExtra: string(staticExtra),
-			Extra:       "{}",
-			BlockNumber: blockNumber,
-		})
+	if resp.BlockNumber == nil {
+		return nil, metadataBytes, ErrInvalidSnapshot
 	}
 
+	psmCodeHash, hookCodeHash, feeCallerCodeHash, err := probeProfileCode(ctx, u.ethrpcClient,
+		psm, feeHook, feeCaller,
+		resp.BlockNumber)
+	if err != nil {
+		return nil, metadataBytes, err
+	}
+	psmBonded, err := probePSMBond(ctx, u.ethrpcClient, psm, debtToken, resp.BlockNumber)
+	if err != nil {
+		return nil, metadataBytes, err
+	}
+	snapshot := &profileSnapshot{
+		PSM: psm, DebtToken: debtToken, MetaCore: metaCore, Stable: stable,
+		FeeCaller: feeCaller, FeeHook: feeHook, CapHook: capHook, YieldHook: yieldHook,
+		ListedStable: listedStable, ListedStablesLength: listedStablesLength,
+		WadOffset: wadOffset, EntryFeeBp: entryFee, ExitFeeBp: exitFee,
+		PSMCodeHash: psmCodeHash, FeeHookCodeHash: hookCodeHash, FeeCallerCodeHash: feeCallerCodeHash,
+		PSMBonded: psmBonded,
+	}
+	if err := snapshot.validate(); err != nil {
+		return nil, metadataBytes, err
+	}
+
+	static := staticExtraFromProfile(snapshot, u.config.GasDeposit, u.config.GasRedeem)
+	fingerprint := profileFingerprint(static, u.config.DexID, uint64(u.config.ChainID))
+	if metadata.Profile == fingerprint {
+		return nil, metadataBytes, nil
+	}
+	staticExtra, err := json.Marshal(static)
+	if err != nil {
+		return nil, metadataBytes, err
+	}
+
+	poolAddress := hexutil.Encode(psm[:]) + "-" + hexutil.Encode(stable[:])
+	pools := []entity.Pool{{
+		Address:   poolAddress,
+		Exchange:  u.config.DexID,
+		Type:      DexType,
+		Timestamp: time.Now().Unix(),
+		Tokens: []*entity.PoolToken{
+			{Address: hexutil.Encode(debtToken[:]), Swappable: true},
+			{Address: hexutil.Encode(stable[:]), Swappable: true},
+		},
+		Reserves:    entity.PoolReserves{"0", "0"},
+		StaticExtra: string(staticExtra),
+		Extra:       "{}",
+		BlockNumber: resp.BlockNumber.Uint64(),
+	}}
+
+	metadata.Profile = fingerprint
 	newMetadataBytes, err := json.Marshal(metadata)
 	if err != nil {
 		return nil, metadataBytes, err

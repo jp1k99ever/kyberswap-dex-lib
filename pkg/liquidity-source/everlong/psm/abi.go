@@ -7,8 +7,8 @@ import (
 )
 
 var (
-	psmABI     abi.ABI
-	capHookABI abi.ABI
+	psmABI       abi.ABI
+	debtTokenABI abi.ABI
 )
 
 func init() {
@@ -17,7 +17,7 @@ func init() {
 		data   []byte
 	}{
 		{&psmABI, psmABIJson},
-		{&capHookABI, capHookABIJson},
+		{&debtTokenABI, debtTokenABIJson},
 	} {
 		parsed, err := abi.JSON(bytes.NewReader(e.data))
 		if err != nil {

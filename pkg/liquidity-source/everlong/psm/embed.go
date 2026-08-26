@@ -7,5 +7,5 @@ import (
 //go:embed abi/PermissionlessPSM.json
 var psmABIJson []byte
 
-//go:embed abi/CapHook.json
-var capHookABIJson []byte
+//go:embed abi/DebtToken.json
+var debtTokenABIJson []byte

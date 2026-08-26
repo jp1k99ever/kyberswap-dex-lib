@@ -15,8 +15,22 @@
   },
   {
     "inputs": [],
+    "name": "feeHook",
+    "outputs": [{ "internalType": "contract IPsmFeeHook", "name": "", "type": "address" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "capHook",
     "outputs": [{ "internalType": "address", "name": "", "type": "address" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "yieldHook",
+    "outputs": [{ "internalType": "contract IPsmYieldHook", "name": "", "type": "address" }],
     "stateMutability": "view",
     "type": "function"
   },
@@ -62,6 +76,20 @@
   {
     "inputs": [],
     "name": "metaCore",
+    "outputs": [{ "internalType": "address", "name": "", "type": "address" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "listedStablesLength",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "name": "listedStables",
     "outputs": [{ "internalType": "address", "name": "", "type": "address" }],
     "stateMutability": "view",
     "type": "function"
