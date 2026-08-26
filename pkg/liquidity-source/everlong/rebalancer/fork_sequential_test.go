@@ -22,6 +22,7 @@ import (
 	everlongcvamm "github.com/KyberNetwork/kyberswap-dex-lib/pkg/liquidity-source/everlong/cvamm"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/test"
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 // TestBidirectionalSequentialFork executes two fills back to back on an anvil fork —
@@ -73,7 +74,7 @@ func TestBidirectionalSequentialFork(t *testing.T) {
 			tracked, err := NewPoolTracker(cfg, client).GetNewPoolState(ctx, pools[0], pool.GetNewPoolStateParams{})
 			require.NoError(t, err)
 
-			cvammCfg := &everlongcvamm.Config{DexID: "everlong-cvamm",
+			cvammCfg := &everlongcvamm.Config{DexID: "everlong-cvamm", ChainID: valueobject.ChainIDBerachain,
 				ALMs: []everlongcvamm.ALMConfig{{Address: se.UnderlyingCvamm}}}
 			cvammPools, _, err := everlongcvamm.NewPoolsListUpdater(cvammCfg, client).GetNewPools(ctx, nil)
 			require.NoError(t, err)

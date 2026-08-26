@@ -18,6 +18,7 @@ import (
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/entity"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/test"
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 func TestStateOverridesFailClosed(t *testing.T) {
@@ -47,7 +48,8 @@ func TestTrackerRejectsStaleConfiguredProfileBeforeRPC(t *testing.T) {
 	p := poolEntityFromFixture(t, sIn[0], nil)
 	client := ethrpc.New("http://127.0.0.1:1")
 
-	valid := &Config{DexID: DexType, ALMs: []ALMConfig{{Address: testALM}}}
+	valid := &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
+		ALMs: []ALMConfig{{Address: testALM}}}
 	var se StaticExtra
 	require.NoError(t, json.Unmarshal([]byte(p.StaticExtra), &se))
 	require.NoError(t, validateTrackerProfile(p, &se, valid))
@@ -57,13 +59,14 @@ func TestTrackerRejectsStaleConfiguredProfileBeforeRPC(t *testing.T) {
 		cfg  *Config
 	}{
 		{"nil config", nil},
-		{"removed ALM", &Config{DexID: DexType}},
-		{"changed dex", &Config{DexID: "detached", ALMs: valid.ALMs}},
+		{"removed ALM", &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain}},
+		{"changed dex", &Config{DexID: "detached", ChainID: valueobject.ChainIDBerachain,
+			ALMs: valid.ALMs}},
 		{"changed chain", &Config{DexID: DexType, ChainID: 1, ALMs: valid.ALMs}},
-		{"changed adapter", &Config{DexID: DexType, ALMs: []ALMConfig{{
+		{"changed adapter", &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain, ALMs: []ALMConfig{{
 			Address: testALM, Adapter: "0x0000000000000000000000000000000000000003",
 		}}}},
-		{"changed gas", &Config{DexID: DexType, ALMs: []ALMConfig{{
+		{"changed gas", &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain, ALMs: []ALMConfig{{
 			Address: testALM, GasStableIn: 1,
 		}}}},
 	} {
@@ -125,7 +128,8 @@ func TestLivePipeline(t *testing.T) {
 	}
 	multicallAddr := common.HexToAddress(multicall)
 	client := ethrpc.New(rpcURL).SetMulticallContract(multicallAddr)
-	cfg := &Config{DexID: DexType, ALMs: []ALMConfig{{Address: almAddress}}}
+	cfg := &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
+		ALMs: []ALMConfig{{Address: almAddress}}}
 	ctx := context.Background()
 
 	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
@@ -338,7 +342,8 @@ func TestFeeLawParityAgainstChain(t *testing.T) {
 	}
 	client := ethrpc.New(rpcURL).
 		SetMulticallContract(common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"))
-	cfg := &Config{DexID: DexType, ALMs: []ALMConfig{{Address: almAddress}}}
+	cfg := &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
+		ALMs: []ALMConfig{{Address: almAddress}}}
 
 	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)

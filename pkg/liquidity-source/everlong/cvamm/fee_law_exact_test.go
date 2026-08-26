@@ -17,6 +17,7 @@ import (
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/entity"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/test"
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 // TestExactFeeLawMatchesChain: the ported law must reproduce poolFeeDirectional at the
@@ -189,7 +190,8 @@ func liveClient() (*ethrpc.Client, *Config) {
 	}
 	return ethrpc.New(cvammRPCURL()).
 			SetMulticallContract(common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11")),
-		&Config{DexID: DexType, ALMs: []ALMConfig{{Address: alm}}}
+		&Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
+			ALMs: []ALMConfig{{Address: alm}}}
 }
 
 func trackAt(t *testing.T, ctx context.Context, client *ethrpc.Client, p entity.Pool,

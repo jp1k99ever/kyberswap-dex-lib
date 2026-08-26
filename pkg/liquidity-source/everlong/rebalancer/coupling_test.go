@@ -15,6 +15,7 @@ import (
 	everlongcvamm "github.com/KyberNetwork/kyberswap-dex-lib/pkg/liquidity-source/everlong/cvamm"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/test"
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 // TestBasePoolCoupling wires the live CollateralRebalancer pool to the everlong-cvamm pool it
@@ -268,7 +269,8 @@ func TestBasePoolCoupling(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(pools[0].StaticExtra), &se))
 	require.NotEmpty(t, se.UnderlyingCvamm, "adapter alm() must resolve the wrapped CvammALM")
 
-	cvammCfg := &everlongcvamm.Config{DexID: "everlong-cvamm", ALMs: []everlongcvamm.ALMConfig{{Address: se.UnderlyingCvamm}}}
+	cvammCfg := &everlongcvamm.Config{DexID: "everlong-cvamm", ChainID: valueobject.ChainIDBerachain,
+		ALMs: []everlongcvamm.ALMConfig{{Address: se.UnderlyingCvamm}}}
 	cvammPools, _, err := everlongcvamm.NewPoolsListUpdater(cvammCfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
 	require.Len(t, cvammPools, 1)
@@ -408,7 +410,8 @@ func TestReverseCouplingAgainstChain(t *testing.T) {
 	require.NoError(t, err)
 
 	// CVAMM snapshot at the parent block and at the fill block (the truth to match).
-	cvammCfg := &everlongcvamm.Config{DexID: "everlong-cvamm", ALMs: []everlongcvamm.ALMConfig{{Address: se.UnderlyingCvamm}}}
+	cvammCfg := &everlongcvamm.Config{DexID: "everlong-cvamm", ChainID: valueobject.ChainIDBerachain,
+		ALMs: []everlongcvamm.ALMConfig{{Address: se.UnderlyingCvamm}}}
 	cvammPools, _, err := everlongcvamm.NewPoolsListUpdater(cvammCfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
 	baseAt := func(block *big.Int) *everlongcvamm.PoolSimulator {
@@ -515,7 +518,7 @@ func TestCloneIsolatesBasePool(t *testing.T) {
 	tracked, err := NewPoolTracker(cfg, client).GetNewPoolState(ctx, pools[0], pool.GetNewPoolStateParams{})
 	require.NoError(t, err)
 
-	cvammCfg := &everlongcvamm.Config{DexID: "everlong-cvamm",
+	cvammCfg := &everlongcvamm.Config{DexID: "everlong-cvamm", ChainID: valueobject.ChainIDBerachain,
 		ALMs: []everlongcvamm.ALMConfig{{Address: se.UnderlyingCvamm}}}
 	cvammPools, _, err := everlongcvamm.NewPoolsListUpdater(cvammCfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)

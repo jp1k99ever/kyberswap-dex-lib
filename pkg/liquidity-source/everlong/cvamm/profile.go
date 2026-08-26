@@ -62,7 +62,7 @@ func normalizeAddress(raw string, optional bool) (string, bool) {
 }
 
 func cvammConfigHash(dexID string, chainID valueobject.ChainID, alm ALMConfig) (string, error) {
-	if dexID == "" || alm.GasStableIn < 0 || alm.GasVolatileIn < 0 {
+	if dexID == "" || chainID == 0 || alm.GasStableIn < 0 || alm.GasVolatileIn < 0 {
 		return "", ErrInvalidProfile
 	}
 	almAddress, ok := normalizeAddress(alm.Address, false)
@@ -134,7 +134,7 @@ func staticProfileHash(se *StaticExtra) (string, error) {
 func validStaticProfile(se *StaticExtra, address, exchange, poolType string, blockNumber uint64,
 	tokens []string) bool {
 	if se == nil || se.ProfileVersion != cvammProfileVersion || poolType != DexType ||
-		se.DexID == "" || exchange != se.DexID || blockNumber == 0 || len(tokens) != 2 ||
+		se.DexID == "" || se.ChainID == 0 || exchange != se.DexID || blockNumber == 0 || len(tokens) != 2 ||
 		!strings.EqualFold(se.ImplementationCodeHash, supportedImplementationCodeHash.Hex()) {
 		return false
 	}

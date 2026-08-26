@@ -58,6 +58,35 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 			metadata.Profiles = map[string]string{}
 		}
 	}
+	if u.config == nil || u.config.DexID == "" || u.config.ChainID == 0 {
+		return nil, metadataBytes, ErrInvalidProfile
+	}
+
+	// Build the current configured set before touching RPC. Besides validating every
+	// execution profile, this lets the cursor forget removed venues. Otherwise removing
+	// and later re-adding the same ALM would leave Listed=true forever and suppress the
+	// replacement entity the tracker now requires.
+	configured := make(map[string]bool, len(u.config.ALMs))
+	profiles := make(map[string]string, len(u.config.ALMs))
+	for _, alm := range u.config.ALMs {
+		almAddress, ok := normalizeAddress(alm.Address, false)
+		if !ok || configured[almAddress] {
+			return nil, metadataBytes, ErrInvalidProfile
+		}
+		profile, err := cvammConfigHash(u.config.DexID, u.config.ChainID, alm)
+		if err != nil {
+			return nil, metadataBytes, err
+		}
+		configured[almAddress], profiles[almAddress] = true, profile
+	}
+	cursorChanged := metadata.prune(configured)
+	if len(configured) == 0 {
+		if !cursorChanged {
+			return nil, metadataBytes, nil
+		}
+		newMetadataBytes, err := json.Marshal(metadata)
+		return nil, newMetadataBytes, err
+	}
 
 	// Pin listing and every implementation word to one head. The cursor stores the
 	// implementation identity rather than only a boolean: an upgrade relists the same
@@ -69,18 +98,10 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 	}
 	block := new(big.Int).SetUint64(blockNumber)
 	implementations := make(map[string]string, len(u.config.ALMs))
-	profiles := make(map[string]string, len(u.config.ALMs))
 	var newALMs []ALMConfig
 	for _, alm := range u.config.ALMs {
-		almAddress, ok := normalizeAddress(alm.Address, false)
-		if !ok {
-			return nil, metadataBytes, ErrInvalidProfile
-		}
-		profile, err := cvammConfigHash(u.config.DexID, u.config.ChainID, alm)
-		if err != nil {
-			return nil, metadataBytes, err
-		}
-		profiles[almAddress] = profile
+		almAddress, _ := normalizeAddress(alm.Address, false)
+		profile := profiles[almAddress]
 		word, err := u.ethrpcClient.GetETHClient().StorageAt(ctx,
 			common.HexToAddress(alm.Address), cvammEIP1967ImplSlot, block)
 		if err != nil {
@@ -99,14 +120,16 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 			return nil, metadataBytes, ErrUnsupportedImplementation
 		}
 		implementations[almAddress] = impl
-		if !metadata.Listed[almAddress] ||
-			!strings.EqualFold(metadata.Implementations[almAddress], impl) ||
-			!strings.EqualFold(metadata.Profiles[almAddress], profile) {
+		if !metadata.matches(almAddress, impl, profile) {
 			newALMs = append(newALMs, alm)
 		}
 	}
 	if len(newALMs) == 0 {
-		return nil, metadataBytes, nil
+		if !cursorChanged {
+			return nil, metadataBytes, nil
+		}
+		newMetadataBytes, err := json.Marshal(metadata)
+		return nil, newMetadataBytes, err
 	}
 
 	tokens0 := make([]common.Address, len(newALMs))
@@ -192,6 +215,37 @@ func (u *PoolsListUpdater) GetNewPools(ctx context.Context, metadataBytes []byte
 		return nil, metadataBytes, err
 	}
 	return pools, newMetadataBytes, nil
+}
+
+func (m Metadata) matches(address, implementation, profile string) bool {
+	return m.Listed[address] && strings.EqualFold(m.Implementations[address], implementation) &&
+		strings.EqualFold(m.Profiles[address], profile)
+}
+
+func (m *Metadata) prune(configured map[string]bool) bool {
+	if m == nil {
+		return false
+	}
+	changed := false
+	for address := range m.Listed {
+		if !configured[address] {
+			delete(m.Listed, address)
+			changed = true
+		}
+	}
+	for address := range m.Implementations {
+		if !configured[address] {
+			delete(m.Implementations, address)
+			changed = true
+		}
+	}
+	for address := range m.Profiles {
+		if !configured[address] {
+			delete(m.Profiles, address)
+			changed = true
+		}
+	}
+	return changed
 }
 
 // hookOrEmpty renders the fee hook, or "" when the ALM has none. address(0) is a valid

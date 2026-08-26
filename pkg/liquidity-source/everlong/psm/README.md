@@ -31,8 +31,10 @@ executor's runtime instead and is deliberately rejected until that executor is r
 as a separate profile.
 
 This revision expands `StaticExtra` and the simulator's ForceAsArray msgpack shape. Even
-though the source has not previously shipped upstream, rollout must flush/rebuild any
-persisted pool entities and simulator caches before enabling it. Legacy or partially
+though the source has not previously shipped upstream, follow the
+[coordinated Everlong rollout](../README.md): stop routing, deploy the pool and router
+binaries together, flush entities and simulators for all three sources, reset all three
+listing cursors, relist and retrack, and only then re-enable routing. Legacy or partially
 decoded objects fail closed at quote time; they are not migrated in place.
 
 Fee-rate updates remain exact within a route because transactions cannot interleave: a

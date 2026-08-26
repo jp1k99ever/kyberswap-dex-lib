@@ -167,7 +167,7 @@ func TestLiveListTrackQuote(t *testing.T) {
 
 	p.Tokens[0].Decimals = 18
 	p.Tokens[1].Decimals = 8
-	cvCfg := &everlongcvamm.Config{DexID: everlongcvamm.DexType,
+	cvCfg := &everlongcvamm.Config{DexID: everlongcvamm.DexType, ChainID: valueobject.ChainIDBerachain,
 		ALMs: []everlongcvamm.ALMConfig{{Address: staticExtra.UnderlyingCvamm}}}
 	cvPools, _, err := everlongcvamm.NewPoolsListUpdater(cvCfg, client).GetNewPools(context.Background(), nil)
 	require.NoError(t, err)

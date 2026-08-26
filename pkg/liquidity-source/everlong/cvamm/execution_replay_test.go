@@ -14,6 +14,7 @@ import (
 
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/test"
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 // TestReplayLiveSwaps replays every swap settled on the Berachain CvammALM so far
@@ -70,7 +71,8 @@ func TestReplayLiveSwaps(t *testing.T) {
 	const almAddress = "0xF5124F5605ce1e91A7429B837b7daC8f9E5378dd"
 	client := ethrpc.New(rpcURL).
 		SetMulticallContract(common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"))
-	cfg := &Config{DexID: DexType, ALMs: []ALMConfig{{Address: almAddress}}}
+	cfg := &Config{DexID: DexType, ChainID: valueobject.ChainIDBerachain,
+		ALMs: []ALMConfig{{Address: almAddress}}}
 	ctx := context.Background()
 
 	pools, _, err := NewPoolsListUpdater(cfg, client).GetNewPools(ctx, nil)

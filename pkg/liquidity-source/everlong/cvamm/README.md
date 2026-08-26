@@ -8,9 +8,9 @@ validates it again on every quote and coupled liquidity transition.
 ## Cache migration
 
 Profile version 1 changes both the persisted `entity.Pool.StaticExtra` payload and the
-`PoolSimulator` structure encoded by msgpack with `SetForceAsArray(true)`. Deploy the
-pool-service and router-service binaries together. Before enabling routing, discard all
-cached `everlong-cvamm` entities and serialized simulators, reset this source's listing
-metadata, then run the lister and tracker to completion. Do not decode pre-version-1
-simulators with this binary: legacy entries fail closed with `ErrInvalidProfile` and must
-be relisted rather than patched in place.
+`PoolSimulator` structure encoded by msgpack with `SetForceAsArray(true)`. Follow the
+[coordinated Everlong rollout](../README.md): stop routing, deploy the pool and router
+binaries together, flush entities and simulators for all three sources, reset all three
+listing cursors, relist and retrack, and only then re-enable routing. Do not decode
+pre-version-1 simulators with this binary: legacy entries fail closed with
+`ErrInvalidProfile` and must be relisted rather than patched in place.

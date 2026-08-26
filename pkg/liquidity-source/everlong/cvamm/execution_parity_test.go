@@ -10,6 +10,7 @@ import (
 
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/entity"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 // venueFixture pins a live Berachain venue state together with the venue's own answers
@@ -73,6 +74,7 @@ func (f *venueFixture) newSimulator(t *testing.T) *PoolSimulator {
 			se := StaticExtra{
 				ProfileVersion:         cvammProfileVersion,
 				DexID:                  DexType,
+				ChainID:                valueobject.ChainIDBerachain,
 				ALM:                    f.ALM,
 				Token0:                 f.Token0,
 				Token1:                 f.Token1,

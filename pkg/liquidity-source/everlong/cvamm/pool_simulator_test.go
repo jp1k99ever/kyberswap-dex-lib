@@ -12,6 +12,7 @@ import (
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/entity"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/util/big256"
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 const (
@@ -28,6 +29,7 @@ func testStaticExtra(t *testing.T) string {
 	se := StaticExtra{
 		ProfileVersion:         cvammProfileVersion,
 		DexID:                  DexType,
+		ChainID:                valueobject.ChainIDBerachain,
 		ALM:                    testALM,
 		Token0:                 testStable,
 		Token1:                 testVol,
@@ -334,6 +336,7 @@ func TestPersistedProfileFailsClosedAfterConstructor(t *testing.T) {
 		mutate func(*PoolSimulator)
 	}{
 		{"profile version", func(s *PoolSimulator) { s.StaticExtra.ProfileVersion = 0 }},
+		{"zero chain", func(s *PoolSimulator) { s.StaticExtra.ChainID = 0 }},
 		{"pool address", func(s *PoolSimulator) {
 			s.Info.Address = "0x0000000000000000000000000000000000000003"
 		}},

@@ -58,16 +58,18 @@ func TestConfigHashCanonicalizesAddresses(t *testing.T) {
 
 func TestConfigHashRejectsInvalidExecutionConfig(t *testing.T) {
 	for _, tc := range []struct {
-		dex string
-		alm ALMConfig
+		dex     string
+		chainID valueobject.ChainID
+		alm     ALMConfig
 	}{
-		{"", ALMConfig{Address: testALM}},
-		{DexType, ALMConfig{Address: testALM, GasStableIn: -1}},
-		{DexType, ALMConfig{Address: testALM, GasVolatileIn: -1}},
-		{DexType, ALMConfig{Address: "not-an-address"}},
-		{DexType, ALMConfig{Address: testALM, Adapter: "not-an-address"}},
+		{"", valueobject.ChainIDBerachain, ALMConfig{Address: testALM}},
+		{DexType, 0, ALMConfig{Address: testALM}},
+		{DexType, valueobject.ChainIDBerachain, ALMConfig{Address: testALM, GasStableIn: -1}},
+		{DexType, valueobject.ChainIDBerachain, ALMConfig{Address: testALM, GasVolatileIn: -1}},
+		{DexType, valueobject.ChainIDBerachain, ALMConfig{Address: "not-an-address"}},
+		{DexType, valueobject.ChainIDBerachain, ALMConfig{Address: testALM, Adapter: "not-an-address"}},
 	} {
-		_, err := cvammConfigHash(tc.dex, valueobject.ChainIDBerachain, tc.alm)
+		_, err := cvammConfigHash(tc.dex, tc.chainID, tc.alm)
 		require.ErrorIs(t, err, ErrInvalidProfile)
 	}
 }

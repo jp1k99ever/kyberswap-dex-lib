@@ -58,7 +58,8 @@ func TestDifferentialFuzz(t *testing.T) {
 	require.NoError(t, err)
 	var se StaticExtra
 	require.NoError(t, json.Unmarshal([]byte(rebPools[0].StaticExtra), &se))
-	cvCfg := &everlongcvamm.Config{DexID: everlongcvamm.DexType, ALMs: []everlongcvamm.ALMConfig{{Address: se.UnderlyingCvamm}}}
+	cvCfg := &everlongcvamm.Config{DexID: everlongcvamm.DexType, ChainID: valueobject.ChainIDBerachain,
+		ALMs: []everlongcvamm.ALMConfig{{Address: se.UnderlyingCvamm}}}
 	cvPools, _, err := everlongcvamm.NewPoolsListUpdater(cvCfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
 	psmCfg := &everlongpsm.Config{DexID: everlongpsm.DexType, ChainID: valueobject.ChainIDBerachain,

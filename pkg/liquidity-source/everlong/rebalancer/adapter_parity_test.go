@@ -14,6 +14,7 @@ import (
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/liquidity-source/everlong/forktest"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/source/pool"
 	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/test"
+	"github.com/KyberNetwork/kyberswap-dex-lib/pkg/valueobject"
 )
 
 // TestAdapterParity is the executor-path proof for the rebalancer, COUPLED to its CVAMM
@@ -37,7 +38,8 @@ func TestAdapterParity(t *testing.T) {
 	require.NoError(t, err)
 	var se StaticExtra
 	require.NoError(t, json.Unmarshal([]byte(pools[0].StaticExtra), &se))
-	cvammCfg := &everlongcvamm.Config{DexID: everlongcvamm.DexType, ALMs: []everlongcvamm.ALMConfig{{Address: se.UnderlyingCvamm}}}
+	cvammCfg := &everlongcvamm.Config{DexID: everlongcvamm.DexType, ChainID: valueobject.ChainIDBerachain,
+		ALMs: []everlongcvamm.ALMConfig{{Address: se.UnderlyingCvamm}}}
 	cvammPools, _, err := everlongcvamm.NewPoolsListUpdater(cvammCfg, client).GetNewPools(ctx, nil)
 	require.NoError(t, err)
 
