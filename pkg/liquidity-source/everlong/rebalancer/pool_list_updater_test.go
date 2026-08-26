@@ -57,6 +57,12 @@ func TestRuntimeLinksLibrary(t *testing.T) {
 	shadowed = append(shadowed, 0x5a, opDelegateCall)
 	require.False(t, runtimeLinksLibrary(shadowed, math))
 
+	// A matching constant is not the target merely because a later delegatecall happens
+	// before another PUSH20. The target below is supplied by a different stack value.
+	unrelated := append([]byte{opPush20}, math.Bytes()...)
+	unrelated = append(unrelated, opPush1, 0x00, 0x50, 0x5a, opDelegateCall)
+	require.False(t, runtimeLinksLibrary(unrelated, math))
+
 	// Solidity's opaque metadata is outside the executable program and must not attest it.
 	metadata := append([]byte{0xa1, opPush20}, math.Bytes()...)
 	metadata = append(metadata, opDelegateCall)

@@ -11,37 +11,24 @@ const (
 	opPush1        = byte(0x60)
 	opPush20       = byte(0x73)
 	opPush32       = byte(0x7f)
+	opGas          = byte(0x5a)
 	opDelegateCall = byte(0xf4)
-	opReturn       = byte(0xf3)
-	opRevert       = byte(0xfd)
-	opInvalid      = byte(0xfe)
-	opSelfDestruct = byte(0xff)
 )
 
-// runtimeLinksLibrary recognizes a Solidity external-library relocation in deployed
-// runtime bytecode. Link placeholders are 20-byte PUSH immediates; parsing instructions
-// (rather than bytes.Contains) prevents an address inside PUSH32 data or compiler metadata
-// from masquerading as a link. A later DELEGATECALL is also required, distinguishing an
-// ordinary embedded address from an external-library call target.
+// runtimeLinksLibrary recognizes the direct Solidity external-library call sequence in
+// the deployed legacy implementation: PUSH20 <relocation>; GAS; DELEGATECALL. Requiring
+// adjacency proves that the relocated address is the call target; merely remembering an
+// earlier PUSH20 until some later DELEGATECALL would accept an unrelated constant while
+// the actual target came from another stack slot. Future implementations expose
+// mathLibrary() and do not use this legacy fallback.
 func runtimeLinksLibrary(code []byte, library common.Address) bool {
 	if library == (common.Address{}) {
 		return false
 	}
 	code = stripSolidityMetadata(code)
-	linkedPush := false
 	for pc := 0; pc < len(code); {
 		op := code[pc]
 		pc++
-		switch op {
-		case opDelegateCall:
-			if linkedPush {
-				return true
-			}
-		case 0x00, opReturn, opRevert, opInvalid, opSelfDestruct:
-			// Do not let a constant in a completed basic block attest an unrelated
-			// delegatecall later in the runtime.
-			linkedPush = false
-		}
 		if op < opPush1 || op > opPush32 {
 			continue
 		}
@@ -49,11 +36,10 @@ func runtimeLinksLibrary(code []byte, library common.Address) bool {
 		if pc+width > len(code) {
 			return false
 		}
-		if op == opPush20 {
-			// The most recently loaded address is the only plausible target. This
-			// prevents a different library pushed after a stray matching constant from
-			// satisfying the check.
-			linkedPush = bytes.Equal(code[pc:pc+width], library[:])
+		if op == opPush20 && bytes.Equal(code[pc:pc+width], library[:]) &&
+			pc+width+1 < len(code) && code[pc+width] == opGas &&
+			code[pc+width+1] == opDelegateCall {
+			return true
 		}
 		pc += width
 	}
